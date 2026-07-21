@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -13,10 +14,12 @@ from pydantic import BaseModel
 
 from backend.md2word.env_loader import load_dotenv
 from backend.md2word import convert_markdown_to_docx
-from backend.md2word.heading_analyzer import build_decision_plan
+from backend.md2word.markdown_cleaner import clean_markdown_with_llm_loop
 from backend.md2word.template_profiles import list_template_profiles
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 TOOLS = [
     {
@@ -52,6 +55,7 @@ class AnalyzeResult(BaseModel):
     header_title: str
     output_name: str
     preview: str
+    cleaned_markdown: str
     file_name: str
     subtitle: str = ''
 
@@ -67,10 +71,6 @@ app.add_middleware(
 
 
 def derive_title(md_text: str, file_name: str) -> str:
-    decision = build_decision_plan(md_text)
-    title = (decision.heading_plan.title_text or '').strip()
-    if title:
-        return title
     match = re.search(r'^#\s+(.+?)\s*$', md_text, flags=re.M)
     if match:
         return match.group(1).strip()
@@ -120,13 +120,21 @@ async def analyze_md2word(markdown_file: UploadFile = File(...)):
     file_name = markdown_file.filename or 'input.md'
     content = await markdown_file.read()
     md_text = content.decode('utf-8', errors='ignore')
-    title = derive_title(md_text, file_name)
+    try:
+        cleaning_result = clean_markdown_with_llm_loop(md_text)
+    except Exception as exc:
+        logger.exception("Failed to clean Markdown during analyze")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    cleaned_markdown = cleaning_result.markdown_text
+    title = derive_title(cleaned_markdown, file_name)
     output_name = f'{Path(file_name).stem}.docx'
     return AnalyzeResult(
         title=title,
         header_title=title,
         output_name=output_name,
-        preview=md_text[:12000],
+        preview=cleaned_markdown[:12000],
+        cleaned_markdown=cleaned_markdown,
         file_name=file_name,
         subtitle='',
     )
@@ -164,8 +172,10 @@ async def convert_md2word(
                 template_path=str(profile.template_path),
                 output_path=str(output_path),
                 title=title or header_title,
+                clean_markdown=False,
             )
         except Exception as exc:
+            logger.exception("Failed to convert Markdown to DOCX")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         with tempfile.NamedTemporaryFile(prefix='md2word-download-', suffix='.docx', delete=False) as persisted_file:

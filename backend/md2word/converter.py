@@ -20,34 +20,10 @@ from docxtpl import DocxTemplate
 from markdown import markdown
 
 from .env_loader import load_dotenv
-from .heading_analyzer import (
-    FrontMatterPlan,
-    HeadingNormalizationPlan,
-    build_decision_plan,
-    normalize_markdown_with_decision,
-)
+from .markdown_cleaner import clean_markdown_with_llm_loop
 from .template_profiles import TemplateProfile, TemplateStyleProfile, get_template_profile_by_path
 
 load_dotenv()
-
-_HEADING_NUM_PATTERNS = [
-    r"^\s*第\s*([0-9]+|[一二三四五六七八九十百千]+)\s*(章|节|部分|篇)\s*[:：、\.\s]*",
-    r"^\s*[一二三四五六七八九十百千]+\s*[、\.\)]\s*",
-    r"^\s*\d+(?:\.\d+)+\s*[\.\)]?\s*",
-    r"^\s*\d+\s*[、\.\)]\s*",
-]
-
-
-def strip_heading_number(text: str) -> str:
-    if not text:
-        return text
-    s = text.strip()
-    for pat in _HEADING_NUM_PATTERNS:
-        s_new = re.sub(pat, "", s).strip()
-        if s_new != s:
-            s = s_new
-    return s
-
 
 def cleanup_placeholder_paragraph(doc, placeholder: str) -> None:
     for para in list(doc.paragraphs):
@@ -334,10 +310,9 @@ def render_markdown_to_subdoc(
     subdoc,
     md_path: str,
     md_text: str,
-    plan: HeadingNormalizationPlan | None = None,
     template_profile: TemplateProfile | None = None,
+    heading_level_offset: int = 0,
 ) -> None:
-    plan = plan or HeadingNormalizationPlan()
     template_profile = template_profile or get_template_profile_by_path("backend/md2word/templates/reference.docx")
     styles = template_profile.styles
     html = markdown(md_text, extensions=["extra"])
@@ -346,7 +321,6 @@ def render_markdown_to_subdoc(
 
     fig_index = 0
     pending_table_caption = ""
-    first_h1_consumed_as_title = False
 
     def handle_image(src: str, caption: str) -> None:
         nonlocal fig_index
@@ -370,13 +344,10 @@ def render_markdown_to_subdoc(
         if not hasattr(node, "name"):
             continue
         if node.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            original_level = int(node.name[1])
-            heading_text = strip_heading_number(node.get_text(strip=True))
-            if plan.skip_first_h1_in_body and original_level == 1 and not first_h1_consumed_as_title:
-                first_h1_consumed_as_title = True
-                continue
-            effective_level = max(1, original_level + plan.heading_shift)
-            render_heading_by_level(subdoc, heading_text, effective_level, styles)
+            heading_level = int(node.name[1])
+            heading_level = max(1, min(6, heading_level + heading_level_offset))
+            heading_text = node.get_text(strip=True)
+            render_heading_by_level(subdoc, heading_text, heading_level, styles)
         elif node.name == "p":
             text = node.get_text(strip=True)
             if text:
@@ -427,21 +398,27 @@ def render_markdown_to_subdoc(
                 add_paragraph(subdoc, node.get_text(strip=True), styles.paragraph)
 
 
-def resolve_subtitle(md_text: str, front_matter_plan: FrontMatterPlan) -> str:
-    if not front_matter_plan.has_subtitle:
-        return ""
-    return front_matter_plan.subtitle_text.strip()
-
-
-def resolve_cover_title(title: str, md_text: str, plan: HeadingNormalizationPlan) -> str:
+def resolve_cover_title(title: str, md_text: str) -> str:
     if title.strip():
         return title.strip()
-    if plan.title_text:
-        return plan.title_text.strip()
     match = re.search(r"^#\s+(.+?)\s*$", md_text, flags=re.M)
     if match:
-        return strip_heading_number(match.group(1).strip())
+        return match.group(1).strip()
     return ""
+
+
+def strip_document_title_heading(md_text: str) -> str:
+    lines = md_text.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("# "):
+            remaining = lines[:idx] + lines[idx + 1 :]
+            while remaining and not remaining[0].strip():
+                remaining.pop(0)
+            return "\n".join(remaining).strip("\n")
+        return md_text
+    return md_text
 
 
 def default_output_path(md_path: str) -> str:
@@ -454,6 +431,7 @@ def convert_markdown_to_docx(
     template_path: str,
     output_path: str | None = None,
     title: str = "",
+    clean_markdown: bool = True,
 ) -> str:
     md_path = os.path.abspath(md_path)
     template_path = os.path.abspath(template_path)
@@ -468,19 +446,22 @@ def convert_markdown_to_docx(
         md_text = f.read()
 
     template_profile = get_template_profile_by_path(template_path)
-    decision = build_decision_plan(md_text)
-    normalized_md_text = normalize_markdown_with_decision(md_text, decision)
-    cover_title = resolve_cover_title(title, md_text, decision.heading_plan)
-    subtitle = resolve_subtitle(normalized_md_text, decision.front_matter_plan)
+    if clean_markdown:
+        cleaning_result = clean_markdown_with_llm_loop(md_text)
+        md_text = cleaning_result.markdown_text
+    cover_title = resolve_cover_title(title, md_text)
+    body_md_text = strip_document_title_heading(md_text)
+    heading_level_offset = -1 if body_md_text != md_text else 0
+    subtitle = ""
 
     tpl = DocxTemplate(template_path)
     subdoc = tpl.new_subdoc()
     render_markdown_to_subdoc(
         subdoc,
         md_path,
-        normalized_md_text,
-        decision.heading_plan,
+        body_md_text,
         template_profile=template_profile,
+        heading_level_offset=heading_level_offset,
     )
     tpl.render({"main_content": subdoc, "title": cover_title, "subtitle": subtitle})
     if not subtitle:

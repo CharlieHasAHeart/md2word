@@ -32,6 +32,7 @@ function installHappyFetch(options?: { convertPromise?: Promise<Response> }) {
         header_title: '测试标题',
         output_name: 'demo.docx',
         preview: '# 测试标题',
+        cleaned_markdown: '# 测试标题',
         file_name: 'demo.md',
         subtitle: '',
       })
@@ -60,6 +61,7 @@ describe('Md2WordApp', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -153,14 +155,22 @@ describe('Md2WordApp', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/md2word/templates')) {
-        return Promise.reject(new Error('boom'))
+        return makeJsonResponse(templates)
+      }
+      if (url.endsWith('/api/md2word/analyze')) {
+        return Promise.resolve(new Response(JSON.stringify({ detail: '整理失败' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }))
       }
       return Promise.reject(new Error('unexpected request'))
     }))
 
     render(<Md2WordApp />)
-    await screen.findByText('模板列表加载失败')
+    chooseMarkdownFile()
+
+    await screen.findByText('整理失败')
     fireEvent.click(screen.getByRole('button', { name: '关闭提示' }))
-    await waitFor(() => expect(screen.queryByText('模板列表加载失败')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('整理失败')).not.toBeInTheDocument())
   })
 })

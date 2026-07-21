@@ -75,6 +75,36 @@ DEFAULT_STYLE_PROFILE = TemplateStyleProfile(
 )
 
 
+REFERENCE_STYLE_PROFILE = TemplateStyleProfile(
+    paragraph=["Normal"],
+    title=["Title"],
+    subtitle=["Subtitle"],
+    headings={
+        1: ["Heading 1", "标题 1"],
+        2: ["Heading 2", "标题 2"],
+        3: ["Heading 3", "标题 3"],
+        4: ["Heading 4", "标题 4"],
+        5: ["Heading 5", "标题 5"],
+        6: ["Heading 6", "标题 6"],
+    },
+    unordered_list=["Normal"],
+    ordered_list=["Normal"],
+    quote=["Normal"],
+    tip_quote=["Normal"],
+    note_quote=["Normal"],
+    warning_quote=["Normal"],
+    image=["Normal"],
+    caption=["Caption", "Normal"],
+    table_caption=["Caption", "Normal"],
+    code_block=["Normal"],
+    code_language=["Normal"],
+    inline_code=["Strong", "Default Paragraph Font"],
+    table=["Table Grid", "Normal Table"],
+    table_header_paragraph=["Normal"],
+    table_body_paragraph=["Normal"],
+)
+
+
 CLOUDBILITY_STYLE_PROFILE = TemplateStyleProfile(
     paragraph=["Cloudbility-正文", "Normal"],
     title=["Cloudbility-封面标题", "Title"],
@@ -146,7 +176,7 @@ TEMPLATE_PROFILES: dict[str, TemplateProfile] = {
         supports_toc=True,
         header_uses_title=True,
         notes="当前默认内置模板",
-        styles=CLOUDBILITY_STYLE_PROFILE,
+        styles=REFERENCE_STYLE_PROFILE,
     ),
     "cloudbility-long": TemplateProfile(
         id="cloudbility-long",

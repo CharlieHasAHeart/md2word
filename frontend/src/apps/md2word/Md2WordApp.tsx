@@ -17,6 +17,7 @@ type AnalyzeResult = {
   header_title: string
   output_name: string
   preview: string
+  cleaned_markdown: string
   file_name: string
   subtitle: string
 }
@@ -38,6 +39,7 @@ export function Md2WordApp() {
   const [outputName, setOutputName] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState('')
+  const [cleanedMarkdown, setCleanedMarkdown] = useState('')
   const [toast, setToast] = useState<ToastState>(null)
   const [busy, setBusy] = useState(false)
   const [step, setStep] = useState<WizardStep>(1)
@@ -83,6 +85,7 @@ export function Md2WordApp() {
     setOutputName('')
     setFile(null)
     setPreview('')
+    setCleanedMarkdown('')
     hideToast()
     setBusy(false)
     setStep(1)
@@ -158,20 +161,21 @@ export function Md2WordApp() {
         body: formData,
       })
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ detail: '扫描失败' }))
-        throw new Error(payload.detail || '扫描失败')
+        const payload = await response.json().catch(() => ({ detail: '整理失败' }))
+        throw new Error(payload.detail || '整理失败')
       }
       const result = (await response.json()) as AnalyzeResult
       setTitle(result.title)
       setHeaderTitle(result.header_title)
       setOutputName(result.output_name)
       setPreview(result.preview || '文件为空')
+      setCleanedMarkdown(result.cleaned_markdown || result.preview || '')
       setStep(2)
       hideToast()
       setAnalyzingName('')
     } catch (error) {
       setAnalyzingName('')
-      showToast(error instanceof Error ? error.message : '扫描失败', 'error')
+      showToast(error instanceof Error ? error.message : '整理失败', 'error')
     } finally {
       setBusy(false)
     }
@@ -182,6 +186,7 @@ export function Md2WordApp() {
     clearDownloadUrl()
     if (!nextFile) {
       setPreview('')
+      setCleanedMarkdown('')
       setAnalyzingName('')
       setStep(1)
       return
@@ -202,7 +207,11 @@ export function Md2WordApp() {
     setStep(4)
     hideToast()
     const formData = new FormData()
-    formData.append('markdown_file', file)
+    const markdownForConversion = cleanedMarkdown || preview
+    const cleanedFile = new File([markdownForConversion], file.name || 'input.md', {
+      type: file.type || 'text/markdown',
+    })
+    formData.append('markdown_file', cleanedFile)
     formData.append('template_id', effectiveTemplateId)
     formData.append('title', title)
     formData.append('header_title', headerTitle)
@@ -254,14 +263,14 @@ export function Md2WordApp() {
             <div className="dropzone-copy">
               <p className="eyebrow">Step 1</p>
               <h2>导入 Markdown 文件</h2>
-              <p>将文档拖入或选择文件，系统会先扫描标题、文档名和正文前置信息。</p>
+              <p>将文档拖入或选择文件，系统会先整理 Markdown 语法并生成预览。</p>
             </div>
             {busy && file ? (
               <div className="dropzone-box loading" aria-live="polite" aria-busy="true">
                 <span className="dropzone-spinner" />
-                <span className="dropzone-title">正在扫描 Markdown 文件</span>
+                <span className="dropzone-title">正在整理 Markdown 文件</span>
                 <span className="dropzone-subtitle">{analyzingName || file.name}</span>
-                <span className="dropzone-loading-copy">请稍候，系统正在提取标题、文件名和正文前置信息。</span>
+                <span className="dropzone-loading-copy">请稍候，系统正在清理语法、检查格式并提取文档信息。</span>
               </div>
             ) : (
               <label className="dropzone-box">
@@ -272,7 +281,7 @@ export function Md2WordApp() {
                 />
                 <span className="dropzone-icon">.md</span>
                 <span className="dropzone-title">点击选择 Markdown 文件</span>
-                <span className="dropzone-subtitle">支持 `.md`，导入后自动进入扫描流程</span>
+                <span className="dropzone-subtitle">支持 `.md`，导入后自动进入整理流程</span>
               </label>
             )}
           </div>
@@ -287,7 +296,7 @@ export function Md2WordApp() {
             <div className="wizard-card-grid step-two-layout">
               <section className="panel-card wizard-card preview-side">
                 <div className="preview-header">
-                  <h3>扫描预览</h3>
+                  <h3>整理后预览</h3>
                   <span>{file?.name || ''}</span>
                 </div>
                 <pre>{preview || '尚无预览内容'}</pre>

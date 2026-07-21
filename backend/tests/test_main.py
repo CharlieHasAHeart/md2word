@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -21,16 +22,24 @@ def test_templates_returns_profiles():
     assert all('preview' in item for item in body)
 
 
-def test_analyze_extracts_title_and_output_name():
+def test_analyze_extracts_title_and_output_name(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        'clean_markdown_with_llm_loop',
+        lambda _md: SimpleNamespace(markdown_text='# 测试标题\n\n正文'),
+    )
+
     response = client.post(
         '/api/md2word/analyze',
-        files={'markdown_file': ('demo.md', '# 测试标题\n\n正文'.encode('utf-8'), 'text/markdown')},
+        files={'markdown_file': ('demo.md', '#测试标题\n\n正文'.encode('utf-8'), 'text/markdown')},
     )
     assert response.status_code == 200
     body = response.json()
     assert body['title'] == '测试标题'
     assert body['header_title'] == '测试标题'
     assert body['output_name'] == 'demo.docx'
+    assert body['preview'] == '# 测试标题\n\n正文'
+    assert body['cleaned_markdown'] == '# 测试标题\n\n正文'
 
 
 def test_convert_rejects_unknown_template():
@@ -44,7 +53,13 @@ def test_convert_rejects_unknown_template():
 
 
 def test_convert_returns_docx(monkeypatch):
-    def fake_convert_markdown_to_docx(md_path: str, template_path: str, output_path: str, title: str = ''):
+    def fake_convert_markdown_to_docx(
+        md_path: str,
+        template_path: str,
+        output_path: str,
+        title: str = '',
+        clean_markdown: bool = True,
+    ):
         Path(output_path).write_bytes(b'fake-docx')
         return output_path
 
@@ -63,7 +78,13 @@ def test_convert_returns_docx(monkeypatch):
 
 
 def test_convert_appends_docx_extension(monkeypatch):
-    def fake_convert_markdown_to_docx(md_path: str, template_path: str, output_path: str, title: str = ''):
+    def fake_convert_markdown_to_docx(
+        md_path: str,
+        template_path: str,
+        output_path: str,
+        title: str = '',
+        clean_markdown: bool = True,
+    ):
         Path(output_path).write_bytes(b'fake-docx')
         return output_path
 

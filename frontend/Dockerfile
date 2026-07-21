@@ -11,7 +11,7 @@ RUN npm install
 COPY frontend ./
 RUN npm run build
 
-FROM nginx:1.27-alpine AS prod
+FROM registry.cloudbility.com.cn/charmirror/nginx@sha256:fafd5f55296511cd0f1c991efa0cb85f323449bf643f3b6d760c6542f020d6e5 AS prod
 COPY frontend/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /frontend/dist /usr/share/nginx/html
 COPY frontend/public/icons /usr/share/nginx/html/icons

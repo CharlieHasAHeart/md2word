@@ -60,6 +60,11 @@ pnpm-debug.log*
 # Generated outputs
 output/
 *.docx
+!backend/md2word/templates/reference.docx
+backend/md2word/templates/cloudbility-long-template.docx
+backend/md2word/templates/cloudbility-short-template.docx
+backend/md2word/templates/yuanchuangli-long-template.docx
+backend/md2word/templates/yuanchuangli-short-template.docx
 
 
 release/
