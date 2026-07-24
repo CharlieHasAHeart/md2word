@@ -1,6 +1,7 @@
 from backend.md2word.markdown_cleaner import (
     MarkdownCleaningError,
     clean_markdown_with_llm_loop,
+    normalize_markdown_headings,
     validate_markdown,
 )
 
@@ -87,3 +88,22 @@ def test_clean_markdown_loop_raises_after_max_rounds():
         assert "heading_missing_space" in exc.validation.format_for_llm()
     else:
         raise AssertionError("Expected MarkdownCleaningError")
+
+
+def test_normalize_markdown_headings_demotes_additional_h1_headings():
+    result = normalize_markdown_headings("# 文档标题\n\n# 第一章 项目概述\n\n# 第二章 建设内容\n")
+
+    assert result == "# 文档标题\n\n## 第一章 项目概述\n\n## 第二章 建设内容\n"
+
+
+def test_clean_markdown_loop_demotes_additional_h1_headings_without_llm():
+    result = clean_markdown_with_llm_loop(
+        "# 文档标题\n\n# 第一章 项目概述\n\n正文\n\n# 第二章 建设内容\n",
+        cleaner=None,
+        max_rounds=2,
+        use_env_cleaner=False,
+    )
+
+    assert result.validation.ok
+    assert result.changed
+    assert result.markdown_text == "# 文档标题\n\n## 第一章 项目概述\n\n正文\n\n## 第二章 建设内容\n"

@@ -154,14 +154,15 @@ def clean_markdown_with_llm_loop(
             raise MarkdownCleanerConfigError("Missing MD2WORD_MARKDOWN_CLEAN_MAX_ROUNDS")
         max_rounds = int(max_rounds_value)
 
-    current = md_text
+    original = md_text
+    current = normalize_markdown_headings(md_text)
     validation = validate_markdown(current)
     if cleaner is None:
         return MarkdownCleaningResult(
             markdown_text=current,
             validation=validation,
             rounds=0,
-            changed=False,
+            changed=current != original,
             source="none",
         )
 
@@ -170,14 +171,14 @@ def clean_markdown_with_llm_loop(
         cleaned = cleaner.clean(current, validation_errors=last_errors)
         if cleaned is None or not cleaned.strip():
             break
-        current = cleaned
+        current = normalize_markdown_headings(cleaned)
         validation = validate_markdown(current)
         if validation.ok:
             return MarkdownCleaningResult(
                 markdown_text=current,
                 validation=validation,
                 rounds=round_no,
-                changed=current != md_text,
+                changed=current != original,
                 source="llm",
             )
         last_errors = validation.format_for_llm()
@@ -189,7 +190,7 @@ def clean_markdown_with_llm_loop(
         markdown_text=current,
         validation=validation,
         rounds=max_rounds,
-        changed=current != md_text,
+        changed=current != original,
         source="llm",
     )
 
@@ -199,6 +200,25 @@ def _strip_wrapping_markdown_fence(text: str) -> str:
     if match:
         return match.group("body").strip()
     return text
+
+
+def normalize_markdown_headings(md_text: str) -> str:
+    lines = md_text.splitlines(keepends=True)
+    normalized: list[str] = []
+    seen_document_title = False
+
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("# "):
+            leading = line[: len(line) - len(stripped)]
+            content = stripped[2:]
+            if seen_document_title:
+                line = f"{leading}## {content}"
+            else:
+                seen_document_title = True
+        normalized.append(line)
+
+    return "".join(normalized)
 
 
 def _validate_code_fences(lines: list[str], issues: list[MarkdownValidationIssue]) -> None:

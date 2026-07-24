@@ -1,10 +1,10 @@
-FROM node:20-bookworm-slim AS dev
+FROM registry.cloudbility.com.cn/charmirror/node:24.16.0-bookworm-slim AS dev
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
 
-FROM node:20-bookworm-slim AS builder
+FROM registry.cloudbility.com.cn/charmirror/node:24.16.0-bookworm-slim AS builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
