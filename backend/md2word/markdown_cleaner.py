@@ -163,7 +163,9 @@ class OpenAICompatibleMarkdownCleaner:
             "2. '# ' 只能表示整篇文档标题。\n"
             "3. 正文章节必须从 '## ' 开始，子节最多到 '#### '。\n"
             "4. 修复标题空格、列表空格、表格列数、代码围栏、图片语法和目录块问题。\n"
-            "5. 不要输出 Word 样式说明，不要加入新的业务章节。\n\n"
+            "5. 去掉正文标题里的编号前缀，只保留章节标题文本，例如把 '## 第一章 项目概述' 改成 '## 项目概述'，把 '### 1.1 核心问题' 改成 '### 核心问题'。\n"
+            "6. 不要把“项目名称：”“建设单位：”这类标题前噪音保留在正文中。\n"
+            "7. 不要输出 Word 样式说明，不要加入新的业务章节。\n\n"
             "允许语法：\n"
             f"{allowed_syntax}\n\n"
             "示例模板：\n"
@@ -189,8 +191,9 @@ class OpenAICompatibleMarkdownCleaner:
             "重点检查：\n"
             "1. '# ' 是否只用于文档标题。\n"
             "2. 正文一级章节是否错误地写成 '# 第一章 ...' 这类文档标题级别。\n"
-            "3. 正文标题是否被错误改写成带多余前缀的标题。\n"
-            "4. 标题层级语义是否仍符合示例模板。\n\n"
+            "3. 正文标题里的编号前缀是否已经去掉，例如“第一章”“一、”“1.”“1.1”不应保留在标题文本中。\n"
+            "4. 标题前噪音如“项目名称：”“建设单位：”是否错误保留在正文中。\n"
+            "5. 标题层级语义是否仍符合示例模板。\n\n"
             "如果可以继续进入后处理，输出：DECISION: ACCEPT\n"
             "如果不可以，输出：DECISION: RETRY\n"
             "然后输出：SUMMARY: 一句话说明\n"
@@ -254,6 +257,7 @@ def validate_conversion_body_markdown(md_text: str) -> MarkdownValidationResult:
     _validate_code_fences(lines, issues)
     _validate_heading_lines(lines, issues)
     _validate_body_heading_lines(lines, issues)
+    _validate_body_prefix_noise(lines, issues)
     _validate_list_lines(lines, issues)
     _validate_tables(lines, issues)
 
@@ -371,6 +375,7 @@ def prepare_markdown_for_conversion(md_text: str) -> PreparedMarkdown:
     document_title = extract_document_title(normalized)
     body_markdown = strip_document_title_heading(normalized)
     body_markdown = demote_body_h1_headings(body_markdown)
+    body_markdown = strip_body_heading_prefixes(body_markdown)
     full_markdown = normalized
     return PreparedMarkdown(
         full_markdown=full_markdown,
@@ -410,6 +415,41 @@ def demote_body_h1_headings(md_text: str) -> str:
             line = f"{leading}## {stripped[2:]}"
         normalized.append(line)
     return "".join(normalized).strip("\n")
+
+
+def strip_body_heading_prefixes(md_text: str) -> str:
+    lines = md_text.splitlines(keepends=True)
+    normalized: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        match = re.match(r"^(#{2,4})\s+(.+?)\s*$", stripped)
+        if not match:
+            normalized.append(line)
+            continue
+        hashes = match.group(1)
+        title_text = match.group(2).strip()
+        title_text = _strip_heading_prefix_text(title_text)
+        leading = line[: len(line) - len(stripped)]
+        normalized.append(f"{leading}{hashes} {title_text}\n" if line.endswith("\n") else f"{leading}{hashes} {title_text}")
+    return "".join(normalized).strip("\n")
+
+
+def _strip_heading_prefix_text(text: str) -> str:
+    patterns = [
+        r"^第[一二三四五六七八九十百千万\d]+章\s+",
+        r"^[一二三四五六七八九十百千万]+、\s*",
+        r"^\d+(?:\.\d+)*[.．、]?\s+",
+    ]
+    current = text.strip()
+    changed = True
+    while changed:
+        changed = False
+        for pattern in patterns:
+            next_text = re.sub(pattern, "", current).strip()
+            if next_text != current:
+                current = next_text
+                changed = True
+    return current or text.strip()
 
 
 def _rewrite_markdown(
@@ -597,6 +637,24 @@ def _validate_body_heading_lines(lines: list[str], issues: list[MarkdownValidati
                     line_no,
                     "body_contains_h1",
                     "正文中不能保留 '# ' 标题，正文一级章节必须使用 '## '。",
+                )
+            )
+
+
+def _validate_body_prefix_noise(lines: list[str], issues: list[MarkdownValidationIssue]) -> None:
+    noise_re = re.compile(r"^\s*(项目名称|建设单位|客户名称|申报单位|目录)\s*[：:]")
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if noise_re.match(stripped):
+            issues.append(
+                MarkdownValidationIssue(
+                    line_no,
+                    "body_prefix_noise",
+                    "正文中不应保留项目名称、建设单位或目录等标题前噪音。",
                 )
             )
 

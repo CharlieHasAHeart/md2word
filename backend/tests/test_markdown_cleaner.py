@@ -7,6 +7,7 @@ from backend.md2word.markdown_cleaner import (
     load_example_template_reference,
     normalize_markdown_headings,
     prepare_markdown_for_conversion,
+    strip_body_heading_prefixes,
     validate_conversion_body_markdown,
     validate_markdown,
 )
@@ -106,7 +107,15 @@ def test_prepare_markdown_for_conversion_demotes_body_h1_headings():
     prepared = prepare_markdown_for_conversion("# 文档标题\n\n# 第一章 项目概述\n\n正文\n")
 
     assert prepared.document_title == "文档标题"
-    assert prepared.body_markdown == "## 第一章 项目概述\n\n正文"
+    assert prepared.body_markdown == "## 项目概述\n\n正文"
+
+
+def test_strip_body_heading_prefixes_removes_common_numbering():
+    result = strip_body_heading_prefixes(
+        "## 第一章 项目概述\n\n### 1.1 核心问题\n\n#### 一、实施路径"
+    )
+
+    assert result == "## 项目概述\n\n### 核心问题\n\n#### 实施路径"
 
 
 def test_validate_conversion_body_markdown_rejects_h1_in_body():
@@ -114,6 +123,13 @@ def test_validate_conversion_body_markdown_rejects_h1_in_body():
 
     assert not result.ok
     assert any(issue.code == "body_contains_h1" for issue in result.issues)
+
+
+def test_validate_conversion_body_markdown_rejects_prefix_noise():
+    result = validate_conversion_body_markdown("项目名称：区域医疗协同平台\n\n## 平台概述\n\n正文")
+
+    assert not result.ok
+    assert any(issue.code == "body_prefix_noise" for issue in result.issues)
 
 
 def test_clean_markdown_loop_returns_conversion_gate_result_without_llm():

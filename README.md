@@ -59,6 +59,18 @@ npm run dev
 uv run --project backend md2word -i input.md -t backend/md2word/templates/reference.docx -o output.docx
 ```
 
+```bash
+docker exec multi-space-backend-dev sh -lc 'cd /app/backend && uv run md2word-clean -i samples/input.md -o samples/cleaned.md --body-output samples/body.md --meta-output samples/meta.json'
+```
+
+```bash
+docker exec multi-space-backend-dev sh -lc 'cd /app/backend && uv run md2word-clean -i samples/input.md --compare-output samples/compare-case-01'
+```
+
+```bash
+docker exec multi-space-backend-dev sh -lc 'cd /app/backend && uv run md2word-clean-regress --compare-output-root /tmp/md2word-regression-run'
+```
+
 ## Build
 
 Preferred:
