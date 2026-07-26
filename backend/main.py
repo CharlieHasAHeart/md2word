@@ -58,6 +58,14 @@ class AnalyzeResult(BaseModel):
     cleaned_markdown: str
     file_name: str
     subtitle: str = ''
+    agent_used: bool = False
+    accepted: bool = False
+    rounds: int = 0
+    source: str = 'none'
+    issues_before: list[str] = []
+    issues_after: list[str] = []
+    plan_summary: str = ''
+    review_summary: str = ''
 
 
 app = FastAPI(title='Workspace API')
@@ -137,6 +145,14 @@ async def analyze_md2word(markdown_file: UploadFile = File(...)):
         cleaned_markdown=cleaned_markdown,
         file_name=file_name,
         subtitle='',
+        agent_used=getattr(cleaning_result, 'agent_used', False),
+        accepted=getattr(cleaning_result, 'accepted', False),
+        rounds=getattr(cleaning_result, 'rounds', 0),
+        source=getattr(cleaning_result, 'source', 'none'),
+        issues_before=[issue.code for issue in getattr(cleaning_result, 'issues_before', [])],
+        issues_after=[issue.code for issue in getattr(cleaning_result, 'issues_after', [])],
+        plan_summary=getattr(cleaning_result, 'plan_summary', ''),
+        review_summary=getattr(cleaning_result, 'review_summary', ''),
     )
 
 

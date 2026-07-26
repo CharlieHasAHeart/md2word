@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
@@ -29,12 +31,37 @@ class MarkdownValidationResult:
 
 
 @dataclass(frozen=True)
+class MarkdownAgentReview:
+    accepted: bool
+    summary: str
+    retry_focus: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MarkdownAgentRound:
+    index: int
+    rewrite_summary: str
+    review_summary: str
+    validation_ok: bool
+    issue_codes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class MarkdownCleaningResult:
     markdown_text: str
     validation: MarkdownValidationResult
     rounds: int
     changed: bool
     source: str
+    agent_used: bool = False
+    accepted: bool = False
+    issues_before: list[MarkdownValidationIssue] = field(default_factory=list)
+    issues_after: list[MarkdownValidationIssue] = field(default_factory=list)
+    plan_summary: str = ""
+    review_summary: str = ""
+    trace: list[MarkdownAgentRound] = field(default_factory=list)
+    document_title: str = ""
+    body_markdown: str = ""
 
 
 class MarkdownCleaningError(ValueError):
@@ -45,6 +72,52 @@ class MarkdownCleaningError(ValueError):
 
 class MarkdownCleanerConfigError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class PreparedMarkdown:
+    full_markdown: str
+    document_title: str
+    body_markdown: str
+
+
+@lru_cache(maxsize=1)
+def load_agent_reference_markdown() -> str:
+    reference_path = Path(__file__).with_name("agent_reference.md")
+    return reference_path.read_text(encoding="utf-8").strip()
+
+
+@lru_cache(maxsize=1)
+def load_allowed_syntax_reference() -> str:
+    return _load_reference_section("允许语法")
+
+
+@lru_cache(maxsize=1)
+def load_example_template_reference() -> str:
+    return _load_reference_section("示例模板")
+
+
+def _load_reference_section(section_title: str) -> str:
+    text = load_agent_reference_markdown()
+    allowed_marker = "## 允许语法"
+    example_marker = "## 示例模板"
+
+    if section_title == "允许语法":
+        if allowed_marker not in text:
+            return ""
+        _, remainder = text.split(allowed_marker, 1)
+        if example_marker in remainder:
+            body, _ = remainder.split(example_marker, 1)
+            return body.strip()
+        return remainder.strip()
+
+    if section_title == "示例模板":
+        if example_marker not in text:
+            return ""
+        _, remainder = text.split(example_marker, 1)
+        return remainder.strip()
+
+    return ""
 
 
 class OpenAICompatibleMarkdownCleaner:
@@ -76,41 +149,72 @@ class OpenAICompatibleMarkdownCleaner:
         return cls(base_url=base_url, api_key=api_key, model=model, timeout=timeout)
 
     def clean(self, md_text: str, validation_errors: str = "") -> str | None:
+        return self.rewrite(md_text, review_feedback=validation_errors)
+
+    def rewrite(self, md_text: str, review_feedback: str = "") -> str | None:
+        allowed_syntax = load_allowed_syntax_reference()
+        example_template = load_example_template_reference()
         prompt = (
-            "请在不改变语义、不增删事实内容的前提下，整理下面整篇 Markdown。\n"
-            "目标：让 Markdown 语法规范、结构清晰，并适合后续转换为 Word。\n\n"
+            "你是 Markdown 转 Word 预处理 Agent 的重写阶段。\n"
+            "你的职责是根据允许语法和示例模板，直接修复输入 Markdown，使其更适合后续 Word 转换。\n"
+            "这一步只做结构和语法改写，不做语义审查，不扩写内容，不删改事实。\n\n"
             "硬性要求：\n"
             "1. 只输出整理后的 Markdown 正文，不要解释，不要使用 ```markdown 包裹整篇结果。\n"
-            "2. 标题必须使用 ATX 标题语法，例如 '# 标题'、'## 标题'，井号后必须有一个空格。\n"
-            "3. 保留原文语义、标题文本、段落内容、列表、表格、图片链接和代码块。\n"
-            "4. 可以修复空行、列表缩进、表格分隔行、未闭合代码围栏等 Markdown 语法问题。\n"
-            "5. 不要生成 Word 样式说明、不要加入新的章节、不要删除业务内容。\n"
-            "6. 不要保留手写目录块；如果原文有“目录”及目录条目，只把真实正文内容整理为章节。\n"
-            "7. '# ' 后面的内容只代表整篇文档标题，必须只出现一次，且必须作为第一个有效内容。\n"
-            "8. 不要把“第一章”“一、项目背景”等章节标题写成 '# ...'；这些都必须降为 '## ...'。\n"
-            "9. '## ' 是正文一级章节标题，例如 '## 一、项目背景'；'### ' 是二级小节，例如 '### （一）项目管理'；'#### ' 是三级小节。\n"
-            "10. 不要使用超过四级的标题。\n"
-            "11. 不要使用 Setext 标题、加粗、斜体、删除线、水平分割线或非图片超链接。\n"
-            "12. 图片必须使用标准 Markdown 图片语法：![图注文本](relative/path.png)。\n"
-            "13. 表格必须使用标准 Markdown 表格；表格标题必须放在表格上一行。\n"
-            "14. 在文档标题 '# ...' 前不要保留项目名称、建设单位、目录或其他前置文本。\n"
+            "2. '# ' 只能表示整篇文档标题。\n"
+            "3. 正文章节必须从 '## ' 开始，子节最多到 '#### '。\n"
+            "4. 修复标题空格、列表空格、表格列数、代码围栏、图片语法和目录块问题。\n"
+            "5. 不要输出 Word 样式说明，不要加入新的业务章节。\n\n"
+            "允许语法：\n"
+            f"{allowed_syntax}\n\n"
+            "示例模板：\n"
+            f"{example_template}\n"
         )
-        if validation_errors:
-            prompt += (
-                "\n上一次结果没有通过语法检查。请修复这些错误：\n"
-                f"{validation_errors}\n"
-            )
-        prompt += "\n原始 Markdown：\n" + md_text
+        if review_feedback:
+            prompt += f"\n上轮复核意见：\n{review_feedback}\n"
+        prompt += f"\n原始 Markdown：\n{md_text}"
+        content = self._request(
+            system_prompt="你是 Markdown 重写器。只输出修正后的 Markdown 内容。",
+            user_prompt=prompt,
+        )
+        if not content:
+            return None
+        return _strip_wrapping_markdown_fence(content.strip())
 
+    def review(self, original_md: str, candidate_md: str) -> MarkdownAgentReview:
+        allowed_syntax = load_allowed_syntax_reference()
+        example_template = load_example_template_reference()
+        prompt = (
+            "你是 Markdown 转 Word 预处理 Agent 的复核阶段。\n"
+            "你的职责是检查候选 Markdown 的语义结构是否合理，而不是做语法校验。\n"
+            "重点检查：\n"
+            "1. '# ' 是否只用于文档标题。\n"
+            "2. 正文一级章节是否错误地写成 '# 第一章 ...' 这类文档标题级别。\n"
+            "3. 正文标题是否被错误改写成带多余前缀的标题。\n"
+            "4. 标题层级语义是否仍符合示例模板。\n\n"
+            "如果可以继续进入后处理，输出：DECISION: ACCEPT\n"
+            "如果不可以，输出：DECISION: RETRY\n"
+            "然后输出：SUMMARY: 一句话说明\n"
+            "再输出 0 到多条以 '- ' 开头的修复重点。\n\n"
+            "允许语法：\n"
+            f"{allowed_syntax}\n\n"
+            "示例模板：\n"
+            f"{example_template}\n\n"
+            f"原文：\n{original_md}\n\n"
+            f"候选 Markdown：\n{candidate_md}"
+        )
+        content = self._request(
+            system_prompt="你是 Markdown 语义结构复核器。只输出 DECISION、SUMMARY 和修复重点。",
+            user_prompt=prompt,
+        )
+        return _parse_review_response(content)
+
+    def _request(self, system_prompt: str, user_prompt: str) -> str | None:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "你是 Markdown 规范化器。只输出修正后的 Markdown 内容。",
-                    },
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0,
             )
@@ -118,10 +222,9 @@ class OpenAICompatibleMarkdownCleaner:
             return None
 
         try:
-            content = response.choices[0].message.content or ""
+            return (response.choices[0].message.content or "").strip()
         except (IndexError, AttributeError):
             return None
-        return _strip_wrapping_markdown_fence(content.strip())
 
 
 def validate_markdown(md_text: str) -> MarkdownValidationResult:
@@ -135,6 +238,22 @@ def validate_markdown(md_text: str) -> MarkdownValidationResult:
     _validate_first_content_is_h1(lines, issues)
     _validate_heading_lines(lines, issues)
     _validate_document_title_heading(lines, issues)
+    _validate_list_lines(lines, issues)
+    _validate_tables(lines, issues)
+
+    return MarkdownValidationResult(ok=not issues, issues=issues)
+
+
+def validate_conversion_body_markdown(md_text: str) -> MarkdownValidationResult:
+    issues: list[MarkdownValidationIssue] = []
+    lines = md_text.splitlines()
+
+    if not md_text.strip():
+        issues.append(MarkdownValidationIssue(1, "empty_body", "正文内容为空。"))
+
+    _validate_code_fences(lines, issues)
+    _validate_heading_lines(lines, issues)
+    _validate_body_heading_lines(lines, issues)
     _validate_list_lines(lines, issues)
     _validate_tables(lines, issues)
 
@@ -155,43 +274,206 @@ def clean_markdown_with_llm_loop(
         max_rounds = int(max_rounds_value)
 
     original = md_text
-    current = normalize_markdown_headings(md_text)
-    validation = validate_markdown(current)
+    initial_validation = validate_markdown(md_text)
+
     if cleaner is None:
+        prepared = prepare_markdown_for_conversion(md_text)
+        validation = validate_conversion_body_markdown(prepared.body_markdown)
         return MarkdownCleaningResult(
-            markdown_text=current,
+            markdown_text=prepared.full_markdown,
             validation=validation,
             rounds=0,
-            changed=current != original,
+            changed=prepared.full_markdown != original,
             source="none",
+            agent_used=False,
+            accepted=validation.ok,
+            issues_before=initial_validation.issues,
+            issues_after=validation.issues,
+            plan_summary="",
+            review_summary="",
+            trace=[],
+            document_title=prepared.document_title,
+            body_markdown=prepared.body_markdown,
         )
 
-    last_errors = validation.format_for_llm() if not validation.ok else ""
+    current = md_text
+    review_feedback = ""
+    trace: list[MarkdownAgentRound] = []
+    last_review = MarkdownAgentReview(accepted=False, summary="等待首次复核。", retry_focus=[])
+    last_prepared = prepare_markdown_for_conversion(current)
+    last_validation = validate_conversion_body_markdown(last_prepared.body_markdown)
+
     for round_no in range(1, max(1, max_rounds) + 1):
-        cleaned = cleaner.clean(current, validation_errors=last_errors)
-        if cleaned is None or not cleaned.strip():
+        rewritten = _rewrite_markdown(cleaner, current, review_feedback)
+        if rewritten is None or not rewritten.strip():
             break
-        current = normalize_markdown_headings(cleaned)
-        validation = validate_markdown(current)
-        if validation.ok:
+
+        review = _review_candidate(cleaner, original, rewritten)
+        prepared = prepare_markdown_for_conversion(rewritten)
+        validation = validate_conversion_body_markdown(prepared.body_markdown)
+        trace.append(
+            MarkdownAgentRound(
+                index=round_no,
+                rewrite_summary="根据参考模板重写 Markdown。",
+                review_summary=review.summary,
+                validation_ok=validation.ok,
+                issue_codes=[issue.code for issue in validation.issues],
+            )
+        )
+        current = rewritten
+        last_review = review
+        last_prepared = prepared
+        last_validation = validation
+
+        if review.accepted and validation.ok:
             return MarkdownCleaningResult(
-                markdown_text=current,
+                markdown_text=prepared.full_markdown,
                 validation=validation,
                 rounds=round_no,
-                changed=current != original,
-                source="llm",
+                changed=prepared.full_markdown != original,
+                source="agent",
+                agent_used=True,
+                accepted=True,
+                issues_before=initial_validation.issues,
+                issues_after=validation.issues,
+                plan_summary="",
+                review_summary=review.summary,
+                trace=trace,
+                document_title=prepared.document_title,
+                body_markdown=prepared.body_markdown,
             )
-        last_errors = validation.format_for_llm()
 
-    if not validation.ok:
-        raise MarkdownCleaningError(validation)
+        review_feedback = _format_review_feedback(review, validation)
+
+    if not last_validation.ok:
+        raise MarkdownCleaningError(last_validation)
 
     return MarkdownCleaningResult(
-        markdown_text=current,
-        validation=validation,
-        rounds=max_rounds,
-        changed=current != original,
-        source="llm",
+        markdown_text=last_prepared.full_markdown,
+        validation=last_validation,
+        rounds=len(trace),
+        changed=last_prepared.full_markdown != original,
+        source="agent",
+        agent_used=True,
+        accepted=last_review.accepted and last_validation.ok,
+        issues_before=initial_validation.issues,
+        issues_after=last_validation.issues,
+        plan_summary="",
+        review_summary=last_review.summary,
+        trace=trace,
+        document_title=last_prepared.document_title,
+        body_markdown=last_prepared.body_markdown,
+    )
+
+
+def prepare_markdown_for_conversion(md_text: str) -> PreparedMarkdown:
+    normalized = normalize_markdown_headings(md_text)
+    document_title = extract_document_title(normalized)
+    body_markdown = strip_document_title_heading(normalized)
+    body_markdown = demote_body_h1_headings(body_markdown)
+    full_markdown = normalized
+    return PreparedMarkdown(
+        full_markdown=full_markdown,
+        document_title=document_title,
+        body_markdown=body_markdown,
+    )
+
+
+def extract_document_title(md_text: str) -> str:
+    match = re.search(r"^#\s+(.+?)\s*$", md_text, flags=re.M)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def strip_document_title_heading(md_text: str) -> str:
+    lines = md_text.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("# "):
+            remaining = lines[:idx] + lines[idx + 1 :]
+            while remaining and not remaining[0].strip():
+                remaining.pop(0)
+            return "\n".join(remaining).strip("\n")
+        return md_text.strip("\n")
+    return md_text.strip("\n")
+
+
+def demote_body_h1_headings(md_text: str) -> str:
+    lines = md_text.splitlines(keepends=True)
+    normalized: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("# "):
+            leading = line[: len(line) - len(stripped)]
+            line = f"{leading}## {stripped[2:]}"
+        normalized.append(line)
+    return "".join(normalized).strip("\n")
+
+
+def _rewrite_markdown(
+    cleaner: OpenAICompatibleMarkdownCleaner,
+    md_text: str,
+    review_feedback: str,
+) -> str | None:
+    if hasattr(cleaner, "rewrite"):
+        try:
+            return cleaner.rewrite(md_text, review_feedback=review_feedback)  # type: ignore[misc]
+        except TypeError:
+            pass
+    if hasattr(cleaner, "clean"):
+        return cleaner.clean(md_text, validation_errors=review_feedback)  # type: ignore[misc]
+    return None
+
+
+def _review_candidate(
+    cleaner: OpenAICompatibleMarkdownCleaner,
+    original_md: str,
+    candidate_md: str,
+) -> MarkdownAgentReview:
+    if hasattr(cleaner, "review"):
+        try:
+            review = cleaner.review(original_md, candidate_md)  # type: ignore[misc]
+        except TypeError:
+            review = None
+        if isinstance(review, MarkdownAgentReview):
+            return review
+    return MarkdownAgentReview(
+        accepted=True,
+        summary="语义结构复核通过。",
+        retry_focus=[],
+    )
+
+
+def _format_review_feedback(
+    review: MarkdownAgentReview,
+    validation: MarkdownValidationResult,
+) -> str:
+    lines = [review.summary]
+    lines.extend(f"- {item}" for item in review.retry_focus)
+    if not validation.ok:
+        lines.append("正文 Markdown 语法校验未通过：")
+        lines.append(validation.format_for_llm())
+    return "\n".join(lines)
+
+
+def _parse_review_response(text: str | None) -> MarkdownAgentReview:
+    if not text:
+        return MarkdownAgentReview(
+            accepted=False,
+            summary="复核阶段没有返回有效结果。",
+            retry_focus=[],
+        )
+
+    accepted = bool(re.search(r"DECISION:\s*ACCEPT", text))
+    summary_match = re.search(r"SUMMARY:\s*(.+)", text)
+    summary = summary_match.group(1).strip() if summary_match else "复核阶段没有给出总结。"
+    retry_focus = [line[2:].strip() for line in text.splitlines() if line.startswith("- ")]
+    return MarkdownAgentReview(
+        accepted=accepted,
+        summary=summary,
+        retry_focus=retry_focus,
     )
 
 
@@ -218,7 +500,7 @@ def normalize_markdown_headings(md_text: str) -> str:
                 seen_document_title = True
         normalized.append(line)
 
-    return "".join(normalized)
+    return "".join(normalized).strip("\n")
 
 
 def _validate_code_fences(lines: list[str], issues: list[MarkdownValidationIssue]) -> None:
@@ -302,6 +584,19 @@ def _validate_document_title_heading(lines: list[str], issues: list[MarkdownVali
                     line_no,
                     "chapter_used_as_document_title",
                     "'# ' 只能表示整篇文档标题，章节标题如“第一章”“一、”必须使用 '## '。",
+                )
+            )
+
+
+def _validate_body_heading_lines(lines: list[str], issues: list[MarkdownValidationIssue]) -> None:
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("# "):
+            issues.append(
+                MarkdownValidationIssue(
+                    line_no,
+                    "body_contains_h1",
+                    "正文中不能保留 '# ' 标题，正文一级章节必须使用 '## '。",
                 )
             )
 

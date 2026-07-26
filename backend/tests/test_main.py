@@ -26,7 +26,17 @@ def test_analyze_extracts_title_and_output_name(monkeypatch):
     monkeypatch.setattr(
         main,
         'clean_markdown_with_llm_loop',
-        lambda _md: SimpleNamespace(markdown_text='# 测试标题\n\n正文'),
+        lambda _md: SimpleNamespace(
+            markdown_text='# 测试标题\n\n正文',
+            agent_used=True,
+            accepted=True,
+            rounds=2,
+            source='agent',
+            issues_before=[SimpleNamespace(code='heading_missing_space')],
+            issues_after=[],
+            plan_summary='修复标题空格。',
+            review_summary='本地语法与结构校验通过，可以进入 Word 转换阶段。',
+        ),
     )
 
     response = client.post(
@@ -40,6 +50,12 @@ def test_analyze_extracts_title_and_output_name(monkeypatch):
     assert body['output_name'] == 'demo.docx'
     assert body['preview'] == '# 测试标题\n\n正文'
     assert body['cleaned_markdown'] == '# 测试标题\n\n正文'
+    assert body['agent_used'] is True
+    assert body['accepted'] is True
+    assert body['rounds'] == 2
+    assert body['source'] == 'agent'
+    assert body['issues_before'] == ['heading_missing_space']
+    assert body['issues_after'] == []
 
 
 def test_convert_rejects_unknown_template():

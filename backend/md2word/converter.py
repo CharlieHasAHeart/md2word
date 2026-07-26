@@ -446,11 +446,19 @@ def convert_markdown_to_docx(
         md_text = f.read()
 
     template_profile = get_template_profile_by_path(template_path)
+    document_title = ""
+    body_md_text = md_text
     if clean_markdown:
         cleaning_result = clean_markdown_with_llm_loop(md_text)
         md_text = cleaning_result.markdown_text
-    cover_title = resolve_cover_title(title, md_text)
-    body_md_text = strip_document_title_heading(md_text)
+        document_title = getattr(cleaning_result, "document_title", "").strip()
+        body_md_text = getattr(cleaning_result, "body_markdown", "").strip() or md_text
+
+    cover_title = title.strip() or document_title or resolve_cover_title("", md_text)
+    if not clean_markdown:
+        body_md_text = strip_document_title_heading(md_text)
+    elif not body_md_text:
+        body_md_text = strip_document_title_heading(md_text)
     heading_level_offset = -1 if body_md_text != md_text else 0
     subtitle = ""
 
