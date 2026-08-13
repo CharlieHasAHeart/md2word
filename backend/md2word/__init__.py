@@ -1,3 +1,3 @@
-from .converter import convert_markdown_to_docx, main
+from .formalizer import formalize_markdown
 
-__all__ = ['convert_markdown_to_docx', 'main']
+__all__ = ["formalize_markdown"]

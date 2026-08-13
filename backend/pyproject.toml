@@ -3,28 +3,25 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "md2word"
-version = "0.3.0"
-description = "Markdown to Word workspace with FastAPI backend and Vite/React frontend"
-readme = "README.md"
-requires-python = ">=3.10"
+name = "multi-app-backend"
+version = "0.1.0"
+description = "FastAPI backend for the multi-app workspace"
+requires-python = ">=3.12"
 dependencies = [
-  "docxtpl",
-  "docxcompose",
-  "python-docx",
-  "markdown",
-  "beautifulsoup4",
   "fastapi",
   "uvicorn[standard]",
   "python-multipart",
-  "openai",
+  "python-docx",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "httpx",
 ]
 
 [project.scripts]
-md2word = "backend.md2word.converter:main"
 md2word-web = "backend.main:main"
-md2word-clean = "backend.md2word.markdown_cleaner_cli:main"
-md2word-clean-regress = "backend.md2word.markdown_cleaner_regression_cli:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -32,9 +29,3 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = [".."]
 include = ["backend*"]
-
-[project.optional-dependencies]
-test = [
-  "pytest",
-  "httpx",
-]
