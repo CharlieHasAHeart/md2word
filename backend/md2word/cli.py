@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from backend.md2word.converter import convert_markdown_to_docx
+from backend.md2word.workflow import convert_markdown_to_docx
 from backend.md2word.template_registry import TEMPLATE_CHOICES, get_template_path
 
 

@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from backend.md2word.converter import convert_markdown_to_docx
+from backend.md2word.workflow import convert_markdown_to_docx
 from backend.md2word.template_registry import TEMPLATE_CHOICES, get_template_path
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

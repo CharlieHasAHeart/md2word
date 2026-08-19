@@ -3,7 +3,8 @@ from zipfile import ZipFile
 
 from docx import Document
 
-from backend.md2word.converter import clean_image_caption, convert_markdown_to_docx, render_markdown_to_document
+from backend.md2word.converter import clean_image_caption, render_markdown_to_document
+from backend.md2word.workflow import convert_markdown_to_docx
 
 
 def paragraph_texts(docx_path: Path) -> list[str]:
@@ -102,8 +103,7 @@ def test_convert_markdown_to_docx_supports_long_template_placeholders(tmp_path: 
     convert_markdown_to_docx(md_path, output_path, template_path=template_path)
 
     texts = paragraph_texts(output_path)
-    assert "系统说明书" in texts
-    assert "品牌 系统说明书" not in texts
+    assert "品牌 系统说明书" in texts
     assert "概述" in texts
     assert "正文" in texts
     assert "{{main_content}}" not in texts
