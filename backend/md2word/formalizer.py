@@ -9,6 +9,9 @@ from urllib import error, request
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十百千万]+[、.．]\s*")
+PAREN_SECTION_RE = re.compile(r"^（[一二三四五六七八九十百千万]+）\s*")
+ARABIC_SECTION_RE = re.compile(r"^(?:\d+(?:\.\d+)*[、.．)]?)\s*")
 IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
 IMAGE_LINK_RE = re.compile(r"\[(?P<text>[^\]]+)\]\((?P<target>[^)]+)\)")
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
@@ -494,7 +497,7 @@ def extract_document_title(md_text: str) -> str:
     for line in md_text.splitlines():
         match = re.match(r"^#\s+(.+?)\s*$", line)
         if match:
-            return match.group(1).strip()
+            return strip_heading_numbering(match.group(1))
     return ""
 
 
@@ -521,7 +524,7 @@ def _filter_non_content_headings(nodes: list[HeadingNode], document_title: str) 
 
 
 def _is_non_content_heading(title: str) -> bool:
-    normalized = re.sub(r"\s+", "", title).strip("：:")
+    normalized = re.sub(r"\s+", "", strip_heading_numbering(title)).strip("：:")
     return normalized in {"目录"} or "使用说明" in normalized
 
 
@@ -566,7 +569,7 @@ def _rebuild_node(
     if node.line < 1 or node.line > len(source_lines):
         return
 
-    output.append(source_lines[node.line - 1].rstrip())
+    output.append(_normalize_heading_line(source_lines[node.line - 1].rstrip()))
     children = sorted(node.children, key=lambda item: item.line)
     cursor = node.line + 1
 
@@ -685,7 +688,7 @@ def drop_duplicate_document_title_noise(md_text: str) -> str:
     skip_body = False
 
     for line in lines:
-        if re.match(rf"^#\s+{re.escape(title)}\s*$", line):
+        if re.match(rf"^#\s+{re.escape(title)}\s*$", _normalize_heading_line(line)):
             if title_seen:
                 skip_body = True
                 continue
@@ -702,3 +705,18 @@ def drop_duplicate_document_title_noise(md_text: str) -> str:
         output.append(line)
 
     return _normalize_blank_lines("\n".join(output)).rstrip() + "\n"
+
+
+def strip_heading_numbering(title: str) -> str:
+    value = title.strip()
+    for pattern in (CHINESE_SECTION_RE, PAREN_SECTION_RE, ARABIC_SECTION_RE):
+        value = pattern.sub("", value).strip()
+    return value
+
+
+def _normalize_heading_line(line: str) -> str:
+    match = HEADING_RE.match(line)
+    if not match:
+        return line
+    title = strip_heading_numbering(match.group(2))
+    return f"{match.group(1)} {title}" if title else line

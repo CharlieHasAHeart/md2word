@@ -22,6 +22,7 @@ test = [
 
 [project.scripts]
 md2word-web = "backend.main:main"
+md2word = "backend.md2word.cli:main"
 
 [tool.setuptools]
 include-package-data = true

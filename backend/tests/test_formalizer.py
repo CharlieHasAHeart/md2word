@@ -82,6 +82,17 @@ def test_formalize_markdown_runs_steps_in_skill_order():
     assert result.document_title == "系统说明书"
 
 
+def test_formalize_markdown_strips_heading_numbering():
+    result = formalize_markdown("# 1. 系统说明书\n\n## 一、项目背景\n\n### 2.1 原创方案\n")
+
+    assert result.document_title == "系统说明书"
+    assert "# 系统说明书" in result.markdown_text
+    assert "## 项目背景" in result.markdown_text
+    assert "### 原创方案" in result.markdown_text
+    assert "1. 系统说明书" not in result.markdown_text
+    assert "一、项目背景" not in result.markdown_text
+
+
 def test_formalize_markdown_keeps_documents_without_h1():
     result = formalize_markdown("## 概述\n\n正文\n")
 

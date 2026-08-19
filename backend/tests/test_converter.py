@@ -87,3 +87,84 @@ def test_convert_markdown_to_docx_embeds_existing_image(tmp_path: Path):
         media_files = [name for name in archive.namelist() if name.startswith("word/media/")]
     assert media_files
     assert "图1 截图" in paragraph_texts(output_path)
+
+
+def test_convert_markdown_to_docx_supports_long_template_placeholders(tmp_path: Path):
+    template_path = tmp_path / "long-template.docx"
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    template = Document()
+    template.add_paragraph("品牌 {{document_title}}")
+    template.add_paragraph("{{main_content}}")
+    template.save(template_path)
+    md_path.write_text("# 系统说明书\n\n## 概述\n\n正文\n", encoding="utf-8")
+
+    convert_markdown_to_docx(md_path, output_path, template_path=template_path)
+
+    texts = paragraph_texts(output_path)
+    assert "系统说明书" in texts
+    assert "品牌 系统说明书" not in texts
+    assert "概述" in texts
+    assert "正文" in texts
+    assert "{{main_content}}" not in texts
+
+
+def test_convert_markdown_to_docx_supports_short_template_placeholders(tmp_path: Path):
+    template_path = tmp_path / "short-template.docx"
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    template = Document()
+    template.add_paragraph("{{title}}")
+    template.add_paragraph("{{subtitle}}")
+    template.add_paragraph("{{main_content}}")
+    template.save(template_path)
+    md_path.write_text("# 系统说明书\n\n## 概述\n\n正文\n", encoding="utf-8")
+
+    convert_markdown_to_docx(md_path, output_path, subtitle="副标题", template_path=template_path)
+
+    texts = paragraph_texts(output_path)
+    assert "系统说明书" in texts
+    assert "副标题" in texts
+    assert "概述" in texts
+    assert "正文" in texts
+    assert "{{title}}" not in texts
+    assert "{{subtitle}}" not in texts
+    assert "{{main_content}}" not in texts
+
+
+def test_convert_markdown_to_docx_shifts_headings_up_for_template(tmp_path: Path):
+    template_path = tmp_path / "template.docx"
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    template = Document()
+    template.add_paragraph("{{document_title}}")
+    template.add_paragraph("{{main_content}}")
+    template.save(template_path)
+    md_path.write_text("# 系统说明书\n\n## 一、项目背景\n\n### 2.1 原创方案\n", encoding="utf-8")
+
+    convert_markdown_to_docx(md_path, output_path, template_path=template_path)
+
+    texts = paragraph_texts(output_path)
+    assert "系统说明书" in texts
+    assert "项目背景" in texts
+    assert "原创方案" in texts
+    assert any(p.style.name == "Heading 1" and p.text == "项目背景" for p in Document(output_path).paragraphs)
+    assert any(p.style.name == "Heading 2" and p.text == "原创方案" for p in Document(output_path).paragraphs)
+
+
+def test_convert_markdown_to_docx_replaces_textbox_placeholder(tmp_path: Path):
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    md_path.write_text("# 系统说明书\n\n## 概述\n\n正文\n", encoding="utf-8")
+
+    convert_markdown_to_docx(
+        md_path,
+        output_path,
+        template_path=Path("/home/charlie/workspace/multi-app/backend/md2word/templates/cloudbility-long-template.docx"),
+    )
+
+    with ZipFile(output_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8", "ignore")
+    assert "{{document_title}}" not in xml
+    assert "系统说明书" in xml
+    assert any(p.style.name == "Cloudbility-正文" for p in Document(output_path).paragraphs if p.text.strip())
