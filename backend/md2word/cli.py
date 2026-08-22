@@ -8,27 +8,16 @@ from backend.md2word.template_registry import TEMPLATE_CHOICES, get_template_pat
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Convert Markdown to Word with md2word templates.")
-    parser.add_argument("--md", required=False, help="Source Markdown file.")
-    parser.add_argument("--output", required=False, help="Output .docx file.")
-    parser.add_argument("--template", default="reference", help="Template name.")
-    parser.add_argument("--title", default="", help="Document title.")
-    parser.add_argument("--subtitle", default="", help="Document subtitle.")
-    parser.add_argument("--list-templates", action="store_true", help="List available templates and exit.")
+    parser = argparse.ArgumentParser(description="Convert one Markdown file to one Word file with a selected template.")
+    parser.add_argument("--md", required=True, help="Source Markdown file.")
+    parser.add_argument("--output", required=True, help="Output .docx file.")
+    parser.add_argument("--template", required=True, choices=sorted(TEMPLATE_CHOICES), help="Template name.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    if args.list_templates:
-        for name, path in TEMPLATE_CHOICES.items():
-            print(f"{name}\t{path.name}")
-        return 0
-
-    if not args.md or not args.output:
-        parser.error("--md and --output are required unless --list-templates is used")
 
     md_path = Path(args.md).resolve()
     output_path = Path(args.output).resolve()
@@ -43,8 +32,6 @@ def main(argv: list[str] | None = None) -> int:
     result = convert_markdown_to_docx(
         md_path,
         output_path,
-        document_title=args.title,
-        subtitle=args.subtitle,
         template_path=template_path,
     )
     print(result.output_path)

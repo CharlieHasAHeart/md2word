@@ -1,12 +1,8 @@
 from pathlib import Path
 
+import pytest
+
 from backend.md2word import cli
-
-
-def test_cli_lists_templates(capsys):
-    assert cli.main(["--list-templates"]) == 0
-    out = capsys.readouterr().out
-    assert "reference" in out
 
 
 def test_cli_converts_markdown_with_template(tmp_path: Path):
@@ -26,3 +22,8 @@ def test_cli_converts_markdown_with_template(tmp_path: Path):
     ) == 0
 
     assert output_path.exists()
+
+
+def test_cli_requires_md_template_and_output():
+    with pytest.raises(SystemExit):
+        cli.main([])

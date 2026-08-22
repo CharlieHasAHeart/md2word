@@ -4,6 +4,7 @@ from zipfile import ZipFile
 from docx import Document
 
 from backend.md2word.converter import clean_image_caption, render_markdown_to_document
+from backend.md2word.template_registry import get_template_path
 from backend.md2word.workflow import convert_markdown_to_docx
 
 
@@ -68,6 +69,7 @@ def test_convert_markdown_to_docx_writes_docx_and_uses_formalizer(tmp_path: Path
     assert "正文 A.B" in texts
     assert "目录" not in texts
     assert "封面噪声" not in texts
+    assert texts.count("系统说明书") == 1
 
 
 def test_convert_markdown_to_docx_embeds_existing_image(tmp_path: Path):
@@ -132,7 +134,7 @@ def test_convert_markdown_to_docx_supports_short_template_placeholders(tmp_path:
     assert "{{main_content}}" not in texts
 
 
-def test_convert_markdown_to_docx_shifts_headings_up_for_template(tmp_path: Path):
+def test_convert_markdown_to_docx_maps_heading_levels_for_template(tmp_path: Path):
     template_path = tmp_path / "template.docx"
     md_path = tmp_path / "input.md"
     output_path = tmp_path / "output.docx"
@@ -160,7 +162,7 @@ def test_convert_markdown_to_docx_replaces_textbox_placeholder(tmp_path: Path):
     convert_markdown_to_docx(
         md_path,
         output_path,
-        template_path=Path("/home/charlie/workspace/multi-app/backend/md2word/templates/cloudbility-long-template.docx"),
+        template_path=get_template_path("cloudbility-long"),
     )
 
     with ZipFile(output_path) as archive:
@@ -168,3 +170,61 @@ def test_convert_markdown_to_docx_replaces_textbox_placeholder(tmp_path: Path):
     assert "{{document_title}}" not in xml
     assert "系统说明书" in xml
     assert any(p.style.name == "Cloudbility-正文" for p in Document(output_path).paragraphs if p.text.strip())
+
+
+def test_convert_markdown_to_docx_uses_branded_template_style_map(tmp_path: Path):
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    md_path.write_text(
+        "# 系统说明书\n\n"
+        "## 概述\n\n"
+        "正文\n\n"
+        "- 列表项\n\n"
+        "> 引用内容\n",
+        encoding="utf-8",
+    )
+
+    convert_markdown_to_docx(
+        md_path,
+        output_path,
+        template_path=get_template_path("cloudbility-long"),
+    )
+
+    paragraphs = [p for p in Document(output_path).paragraphs if p.text.strip()]
+    styles_by_text = {p.text: p.style.name for p in paragraphs}
+    assert styles_by_text["概述"] == "Heading 1"
+    assert styles_by_text["正文"] == "Cloudbility-正文"
+    assert styles_by_text["列表项"] == "Cloudbility-列表样式1级"
+    assert styles_by_text["引用内容"] == "灰色文字"
+
+
+def test_convert_markdown_to_docx_uses_reference_template_style_map(tmp_path: Path):
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    md_path.write_text(
+        "# 系统说明书\n\n"
+        "## 概述\n\n"
+        "正文\n\n"
+        "> 引用内容\n\n"
+        "```python\nprint('x')\n```\n\n"
+        "| 列1 | 列2 |\n"
+        "| --- | --- |\n"
+        "| A | B |\n",
+        encoding="utf-8",
+    )
+
+    convert_markdown_to_docx(
+        md_path,
+        output_path,
+        template_path=get_template_path("reference"),
+    )
+
+    doc = Document(output_path)
+    paragraphs = [p for p in doc.paragraphs if p.text.strip()]
+    styles_by_text = {p.text: p.style.name for p in paragraphs}
+    assert styles_by_text["概述"] == "Heading 1"
+    assert styles_by_text["正文"] == "Normal"
+    assert styles_by_text["引用内容"] == "引用块"
+    assert styles_by_text["print('x')"] == "代码块"
+    assert doc.tables
+    assert doc.tables[0].style.name == "CyanScript Table"
