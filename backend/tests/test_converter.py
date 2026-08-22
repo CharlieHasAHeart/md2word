@@ -4,12 +4,23 @@ from zipfile import ZipFile
 from docx import Document
 
 from backend.md2word.converter import clean_image_caption, render_markdown_to_document
-from backend.md2word.template_registry import get_template_path
+from backend.md2word.template_registry import get_style_map, get_template_path
 from backend.md2word.workflow import convert_markdown_to_docx
 
 
 def paragraph_texts(docx_path: Path) -> list[str]:
     return [paragraph.text for paragraph in Document(docx_path).paragraphs]
+
+
+def paragraph_numbering(paragraph) -> tuple[int | None, int | None]:
+    p_pr = paragraph._p.pPr
+    num_pr = getattr(p_pr, "numPr", None) if p_pr is not None else None
+    num_id = getattr(num_pr, "numId", None) if num_pr is not None else None
+    ilvl = getattr(num_pr, "ilvl", None) if num_pr is not None else None
+    return (
+        int(num_id.val) if num_id is not None and num_id.val is not None else None,
+        int(ilvl.val) if ilvl is not None and ilvl.val is not None else None,
+    )
 
 
 def test_clean_image_caption_removes_redundant_prefixes():
@@ -45,6 +56,45 @@ def test_render_markdown_to_document_adds_missing_image_placeholder(tmp_path: Pa
     assert "图1 截图" in texts
 
 
+def test_render_markdown_to_document_restarts_ordered_lists_per_block():
+    doc = Document(str(get_template_path("reference")))
+
+    render_markdown_to_document(
+        doc,
+        "## 第一节\n\n1. 步骤一\n2. 步骤二\n\n## 第二节\n\n1. 步骤三\n2. 步骤四\n",
+        style_map=get_style_map("reference"),
+    )
+
+    numbered = {paragraph.text: paragraph_numbering(paragraph) for paragraph in doc.paragraphs if paragraph.text.startswith("步骤")}
+    first_num_id, first_ilvl = numbered["步骤一"]
+    second_num_id, second_ilvl = numbered["步骤三"]
+
+    assert first_num_id is not None
+    assert second_num_id is not None
+    assert first_num_id != second_num_id
+    assert first_ilvl == 0
+    assert second_ilvl == 0
+
+
+def test_render_markdown_to_document_keeps_reference_ordered_list_with_blank_lines_in_one_block():
+    doc = Document(str(get_template_path("reference")))
+
+    render_markdown_to_document(
+        doc,
+        "## 第一节\n\n1. 步骤一\n\n2. 步骤二\n\n3. 步骤三\n",
+        style_map=get_style_map("reference"),
+    )
+
+    numbered = {paragraph.text: paragraph_numbering(paragraph) for paragraph in doc.paragraphs if paragraph.text.startswith("步骤")}
+    first_num_id, first_ilvl = numbered["步骤一"]
+    second_num_id, second_ilvl = numbered["步骤二"]
+    third_num_id, third_ilvl = numbered["步骤三"]
+
+    assert first_num_id is not None
+    assert first_num_id == second_num_id == third_num_id
+    assert first_ilvl == second_ilvl == third_ilvl == 0
+
+
 def test_convert_markdown_to_docx_writes_docx_and_uses_formalizer(tmp_path: Path):
     md_path = tmp_path / "input.md"
     output_path = tmp_path / "output.docx"
@@ -65,7 +115,7 @@ def test_convert_markdown_to_docx_writes_docx_and_uses_formalizer(tmp_path: Path
     assert result.document_title == "系统说明书"
     texts = paragraph_texts(output_path)
     assert "系统说明书" in texts
-    assert "第一章 概述" in texts
+    assert "概述" in texts
     assert "正文 A.B" in texts
     assert "目录" not in texts
     assert "封面噪声" not in texts

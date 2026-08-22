@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 from docx import Document
@@ -32,8 +33,34 @@ def test_health_endpoint_returns_ok():
 
 
 def test_list_templates_exposes_known_templates():
-    names = {item["name"] for item in backend_main.list_templates()["templates"]}
+    templates = backend_main.list_templates()
+    names = {item["id"] for item in templates}
     assert {"reference", "cloudbility-long", "cloudbility-short", "yuanchuangli-long", "yuanchuangli-short"} <= names
+    assert any(item["supports_subtitle"] is True for item in templates if item["variant"] == "short")
+    assert all(item["preview"].startswith("/template-covers/") for item in templates)
+
+
+async def read_stream_events(response) -> list[dict]:
+    chunks: list[str] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+    return [json.loads(line) for line in "".join(chunks).splitlines() if line.strip()]
+
+
+def test_formalize_endpoint_returns_cleaned_markdown_defaults():
+    upload = DummyUpload("demo.md", "# 系统说明书\n\n## 概述\n\n正文\n")
+
+    response = asyncio.run(backend_main.formalize_markdown_endpoint(markdown_file=upload, file=None))
+    events = asyncio.run(read_stream_events(response))
+    payload = events[-1]["result"]
+
+    assert payload["title"] == "系统说明书"
+    assert payload["header_title"] == "系统说明书"
+    assert payload["output_name"] == "系统说明书.docx"
+    assert payload["cleaned_markdown"].startswith("# 系统说明书")
+    assert payload["preview"] == payload["cleaned_markdown"]
+    assert payload["file_name"] == "demo.md"
+    assert [event["type"] for event in events[:-1]] == ["stage"] * 10
 
 
 def test_convert_endpoint_uses_long_template(tmp_path: Path, monkeypatch):
@@ -44,9 +71,12 @@ def test_convert_endpoint_uses_long_template(tmp_path: Path, monkeypatch):
     upload = DummyUpload("input.md", "# 系统说明书\n\n## 概述\n\n正文\n")
     response = asyncio.run(
         backend_main.convert_markdown_endpoint(
-            file=upload,
-            template_name="test-long",
-            document_title="",
+            markdown_file=upload,
+            file=None,
+            template_id="test-long",
+            title="",
+            header_title="系统说明书",
+            output_name="",
             subtitle="",
         )
     )
@@ -68,9 +98,12 @@ def test_convert_endpoint_uses_short_template(tmp_path: Path, monkeypatch):
     upload = DummyUpload("input.md", "# 系统说明书\n\n## 概述\n\n正文\n")
     response = asyncio.run(
         backend_main.convert_markdown_endpoint(
-            file=upload,
-            template_name="test-short",
-            document_title="",
+            markdown_file=upload,
+            file=None,
+            template_id="test-short",
+            title="",
+            header_title="系统说明书",
+            output_name="short-result.docx",
             subtitle="副标题",
         )
     )
@@ -85,6 +118,7 @@ def test_convert_endpoint_uses_short_template(tmp_path: Path, monkeypatch):
     assert "{{title}}" not in texts
     assert "{{subtitle}}" not in texts
     assert "{{main_content}}" not in texts
+    assert 'filename="short-result.docx"' in response.headers["Content-Disposition"]
 
 
 def test_convert_endpoint_rejects_unknown_template(tmp_path: Path):
@@ -93,9 +127,12 @@ def test_convert_endpoint_rejects_unknown_template(tmp_path: Path):
     try:
         asyncio.run(
             backend_main.convert_markdown_endpoint(
-                file=upload,
-                template_name="missing-template",
-                document_title="",
+                markdown_file=upload,
+                file=None,
+                template_id="missing-template",
+                title="",
+                header_title="",
+                output_name="",
                 subtitle="",
             )
         )
@@ -104,3 +141,27 @@ def test_convert_endpoint_rejects_unknown_template(tmp_path: Path):
         assert exc.detail["error"] == "unknown_template"
     else:
         raise AssertionError("Expected HTTPException")
+
+
+def test_convert_endpoint_ignores_subtitle_for_long_template(tmp_path: Path, monkeypatch):
+    template_path = tmp_path / "long-template.docx"
+    write_template(template_path, ["{{document_title}}", "{{subtitle}}", "{{main_content}}"])
+    monkeypatch.setitem(backend_main.TEMPLATE_CHOICES, "test-long", template_path)
+
+    upload = DummyUpload("input.md", "# 系统说明书\n\n## 概述\n\n正文\n")
+    response = asyncio.run(
+        backend_main.convert_markdown_endpoint(
+            markdown_file=upload,
+            file=None,
+            template_id="test-long",
+            title="系统说明书",
+            header_title="系统说明书",
+            output_name="",
+            subtitle="不会生效",
+        )
+    )
+
+    out = tmp_path / "long-output.docx"
+    out.write_bytes(response.body)
+    texts = paragraph_texts(out)
+    assert "不会生效" not in texts

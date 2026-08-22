@@ -22,6 +22,19 @@ class MarkdownStyleMap:
     table: str | None
 
 
+@dataclass(frozen=True)
+class TemplateMetadata:
+    id: str
+    label: str
+    notes: str
+    family: str
+    variant: str
+    supports_cover: bool
+    supports_toc: bool
+    supports_subtitle: bool
+    preview: str
+
+
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 TEMPLATE_CHOICES: dict[str, Path] = {
     "reference": TEMPLATE_DIR / "reference.docx",
@@ -90,6 +103,64 @@ TEMPLATE_STYLE_MAPS: dict[str, MarkdownStyleMap] = {
     "yuanchuangli-short": BRANDED_STYLE_MAP,
 }
 
+TEMPLATE_METADATA: dict[str, TemplateMetadata] = {
+    "reference": TemplateMetadata(
+        id="reference",
+        label="默认模板",
+        notes="通用参考排版模板",
+        family="reference",
+        variant="reference",
+        supports_cover=False,
+        supports_toc=False,
+        supports_subtitle=False,
+        preview="/template-covers/reference.svg",
+    ),
+    "cloudbility-long": TemplateMetadata(
+        id="cloudbility-long",
+        label="Cloudbility 长模板",
+        notes="封面与正文一体的长版模板",
+        family="cloudbility",
+        variant="long",
+        supports_cover=True,
+        supports_toc=True,
+        supports_subtitle=False,
+        preview="/template-covers/cloudbility-long.svg",
+    ),
+    "cloudbility-short": TemplateMetadata(
+        id="cloudbility-short",
+        label="Cloudbility 短模板",
+        notes="需要副标题的短版模板",
+        family="cloudbility",
+        variant="short",
+        supports_cover=True,
+        supports_toc=False,
+        supports_subtitle=True,
+        preview="/template-covers/cloudbility-short.svg",
+    ),
+    "yuanchuangli-long": TemplateMetadata(
+        id="yuanchuangli-long",
+        label="源创力 长模板",
+        notes="封面与正文一体的长版模板",
+        family="yuanchuangli",
+        variant="long",
+        supports_cover=True,
+        supports_toc=True,
+        supports_subtitle=False,
+        preview="/template-covers/yuanchuangli-long.svg",
+    ),
+    "yuanchuangli-short": TemplateMetadata(
+        id="yuanchuangli-short",
+        label="源创力 短模板",
+        notes="需要副标题的短版模板",
+        family="yuanchuangli",
+        variant="short",
+        supports_cover=True,
+        supports_toc=False,
+        supports_subtitle=True,
+        preview="/template-covers/yuanchuangli-short.svg",
+    ),
+}
+
 
 def get_template_path(template_name: str) -> Path | None:
     return TEMPLATE_CHOICES.get(template_name.strip())
@@ -105,5 +176,9 @@ def get_style_map_for_template_path(template_path: str | Path | None) -> Markdow
     resolved = Path(template_path).resolve()
     for template_name, path in TEMPLATE_CHOICES.items():
         if path.resolve() == resolved:
-            return TEMPLATE_STYLE_MAPS[template_name]
+            return TEMPLATE_STYLE_MAPS.get(template_name, DEFAULT_STYLE_MAP)
     return DEFAULT_STYLE_MAP
+
+
+def get_template_metadata(template_name: str) -> TemplateMetadata | None:
+    return TEMPLATE_METADATA.get(template_name.strip())

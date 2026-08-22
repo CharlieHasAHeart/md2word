@@ -5,6 +5,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.numbering import CT_Numbering
 from docx.shared import Inches
 
 from .formalizer import SUPPORTED_IMAGE_EXTENSIONS
@@ -89,9 +90,12 @@ def render_markdown_to_document(
 
         ordered_match = ORDERED_LIST_RE.match(line)
         if ordered_match:
-            list_style = styles.ordered_list_2 if _list_level(ordered_match.group("indent")) > 1 else styles.ordered_list
-            _move_before_anchor(_add_paragraph(doc, ordered_match.group("text").strip(), list_style or styles.body), anchor)
-            index += 1
+            ordered_items, index = _consume_ordered_list_block(
+                lines,
+                index,
+                allow_blank_lines=_uses_reference_ordered_list_handling(styles),
+            )
+            _render_ordered_list_block(doc, ordered_items, styles, anchor=anchor)
             continue
 
         _move_before_anchor(_add_paragraph(doc, stripped, styles.body), anchor)
@@ -184,6 +188,124 @@ def _style_for_heading_level(level: int, style_map: MarkdownStyleMap) -> str | N
 def _list_level(indent: str) -> int:
     expanded = indent.replace("\t", "    ")
     return 2 if len(expanded) >= 2 else 1
+
+
+def _consume_ordered_list_block(
+    lines: list[str],
+    start_index: int,
+    allow_blank_lines: bool = False,
+) -> tuple[list[tuple[int, str]], int]:
+    items: list[tuple[int, str]] = []
+    index = start_index
+    root_level: int | None = None
+    while index < len(lines):
+        line = lines[index]
+        match = ORDERED_LIST_RE.match(line)
+        if not match:
+            if allow_blank_lines and not line.strip():
+                next_index = index + 1
+                while next_index < len(lines) and not lines[next_index].strip():
+                    next_index += 1
+                if next_index < len(lines):
+                    next_match = ORDERED_LIST_RE.match(lines[next_index])
+                    if next_match is not None:
+                        next_level = _list_level(next_match.group("indent"))
+                        if root_level is None or next_level == root_level:
+                            index = next_index
+                            continue
+            break
+        level = _list_level(match.group("indent"))
+        if root_level is None:
+            root_level = level
+        items.append((level, match.group("text").strip()))
+        index += 1
+    return items, index
+
+
+def _render_ordered_list_block(
+    doc: Document,
+    items: list[tuple[int, str]],
+    styles: MarkdownStyleMap,
+    anchor=None,
+) -> None:
+    if not items:
+        return
+
+    levels = {max(level - 1, 0) for level, _ in items}
+    restart_num_id = _create_restart_numbering(doc, styles.ordered_list, levels)
+
+    for level, text in items:
+        paragraph_style = _paragraph_style_for_ordered_item(styles, level)
+        paragraph = _add_paragraph(doc, text, paragraph_style)
+        if restart_num_id is not None:
+            _apply_numbering_override(paragraph, restart_num_id, max(level - 1, 0))
+        _move_before_anchor(paragraph, anchor)
+
+
+def _create_restart_numbering(
+    doc: Document,
+    style_name: str | None,
+    levels: set[int],
+) -> int | None:
+    base_num_id = _style_num_id(doc, style_name)
+    if base_num_id is None:
+        return None
+
+    numbering_part = getattr(doc.part, "numbering_part", None)
+    if numbering_part is None:
+        return None
+
+    numbering = numbering_part.element
+    if not isinstance(numbering, CT_Numbering):
+        return None
+
+    try:
+        base_num = numbering.num_having_numId(base_num_id)
+    except KeyError:
+        return None
+
+    abstract_num_id = int(base_num.abstractNumId.val)
+    new_num = numbering.add_num(abstract_num_id)
+    for ilvl in sorted(levels):
+        new_num.add_lvlOverride(ilvl).add_startOverride(1)
+    return int(new_num.numId)
+
+
+def _style_num_id(doc: Document, style_name: str | None) -> int | None:
+    if not style_name:
+        return None
+    try:
+        style = doc.styles[style_name]
+    except KeyError:
+        return None
+
+    p_pr = getattr(style.element, "pPr", None)
+    num_pr = getattr(p_pr, "numPr", None) if p_pr is not None else None
+    num_id = getattr(num_pr, "numId", None) if num_pr is not None else None
+    if num_id is None or num_id.val is None:
+        return None
+    return int(num_id.val)
+
+
+def _apply_numbering_override(paragraph, num_id: int, ilvl: int) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = p_pr.get_or_add_numPr()
+    num_pr.get_or_add_numId().val = num_id
+    num_pr.get_or_add_ilvl().val = ilvl
+
+
+def _paragraph_style_for_ordered_item(styles: MarkdownStyleMap, level: int) -> str | None:
+    # For the reference template, the numbered-list paragraph style already binds its
+    # own numId. Reusing that style while also overriding numId at paragraph level
+    # causes Word to render every item as "1". Keep Normal text styling there and
+    # let numbering.xml drive the visible list formatting.
+    if _uses_reference_ordered_list_handling(styles):
+        return styles.body
+    return styles.ordered_list_2 if level > 1 else styles.ordered_list
+
+
+def _uses_reference_ordered_list_handling(styles: MarkdownStyleMap) -> bool:
+    return styles.ordered_list == "列表-有序"
 
 
 def _consume_fenced_block(lines: list[str], start_index: int, marker: str) -> tuple[str, int]:

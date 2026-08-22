@@ -5,16 +5,35 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Iterator
 from urllib import error, request
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十百千万]+[、.．]\s*")
-PAREN_SECTION_RE = re.compile(r"^（[一二三四五六七八九十百千万]+）\s*")
-ARABIC_SECTION_RE = re.compile(r"^(?:\d+(?:\.\d+)*[、.．)]?)\s*")
+CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十百千万零〇两]+[、.．]\s*")
+PAREN_SECTION_RE = re.compile(r"^[（(]\s*[一二三四五六七八九十百千万零〇两]+\s*[)）]\s*")
+ARABIC_SECTION_RE = re.compile(r"^\d+(?:\.\d+)*(?:\.)?(?:[、．.)）])?\s*")
+CHAPTER_LABEL_RE = re.compile(r"^第\s*[一二三四五六七八九十百千万零〇两\d]+(?:章|节|部分|篇|卷)\s*")
+PAREN_ARABIC_RE = re.compile(r"^[（(]\s*\d+(?:\.\d+)*\s*[)）]\s*")
+LEADING_LIST_MARKER_RE = re.compile(r"^(?:[-*+]|[•·▪◦‣])\s+")
+LEADING_PUNCTUATION_RE = re.compile(r"^(?:\.)+[ \t]*")
 IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)]+)\)")
 IMAGE_LINK_RE = re.compile(r"\[(?P<text>[^\]]+)\]\((?P<target>[^)]+)\)")
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+AI_TRACE_LLM_CONTEXT_BLOCKS = 1
+LEXICAL_CLEANUP_MAX_ROUNDS = 3
+AI_TRACE_LINE_RE = re.compile(
+    r"^\s*(?:>\s*)*(?:以下是|下面是|当然[，,]|好的[，,]|我已(?:经)?|如需|如果你需要|希望这(?:能|可以)|Here is|Below is)\b.*$",
+    flags=re.I,
+)
+AI_TRACE_NOTE_RE = re.compile(
+    r"^\s*(?:>\s*)*\(?Note:\s*May contain AI-generated content\.?\)?\s*$",
+    flags=re.I,
+)
+AI_TRACE_CANDIDATE_RE = re.compile(
+    r"(?:如果你需要|继续输出|继续生成|AI-generated content|May contain AI-generated content|Here is|Below is|以下是|下面是|绘图提示词|prompt|提示词)",
+    flags=re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,12 @@ class FormalizeResult:
     images: list[ImageRef]
     steps: list[FormalizeStep]
     issues: list[FormalizeIssue]
+
+
+@dataclass(frozen=True)
+class FormalizeProgress:
+    name: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -119,11 +144,25 @@ class FormalizerLLMClient:
         return content or None
 
 
+FORMALIZE_STAGE_MESSAGES = {
+    "clean_body_noise": "正在清理正文噪音",
+    "drop_duplicate_document_title_noise": "正在清理重复标题",
+    "extract_heading_tree": "正在提取标题结构",
+    "correct_heading_tree": "正在修正标题层级",
+    "validate_heading_tree_json": "正在校验标题结构",
+    "rebuild_markdown_from_heading_tree": "正在重建正文结构",
+    "inspect_image_refs": "正在检查图片引用",
+    "normalize_supported_markdown_syntax": "正在规范 Markdown 语法",
+    "remove_ai_response_traces": "正在移除 AI 痕迹",
+    "finalize_markdown_cleanup": "正在执行最终清理",
+}
+
+
 def load_formalizer_llm_config() -> FormalizerLLMConfig | None:
-    base_url = os.getenv("MD2WORD_FORMALIZER_LLM_BASE_URL", "").strip()
-    api_key = os.getenv("MD2WORD_FORMALIZER_LLM_API_KEY", "").strip()
-    model = os.getenv("MD2WORD_FORMALIZER_LLM_MODEL", "").strip()
-    timeout_value = os.getenv("MD2WORD_FORMALIZER_LLM_TIMEOUT", "").strip()
+    base_url = os.getenv("MD2WORD_LLM_BASE_URL", "").strip()
+    api_key = os.getenv("MD2WORD_LLM_API_KEY", "").strip()
+    model = os.getenv("MD2WORD_LLM_MODEL", "").strip()
+    timeout_value = os.getenv("MD2WORD_LLM_CLEANER_TIMEOUT", "").strip()
     if not base_url or not api_key or not model or not timeout_value:
         return None
     return FormalizerLLMConfig(
@@ -150,14 +189,37 @@ def formalize_markdown(
     source_path: str | Path | None = None,
     llm_client: FormalizerLLMClient | None = None,
 ) -> FormalizeResult:
+    result: FormalizeResult | None = None
+    for event in iter_formalize_markdown(md_text, source_path=source_path, llm_client=llm_client):
+        if isinstance(event, FormalizeResult):
+            result = event
+    if result is None:
+        raise RuntimeError("Formalize pipeline did not produce a result.")
+    return result
+
+
+def iter_formalize_markdown(
+    md_text: str,
+    source_path: str | Path | None = None,
+    llm_client: FormalizerLLMClient | None = None,
+) -> Iterator[FormalizeProgress | FormalizeResult]:
     llm_client = llm_client if llm_client is not None else FormalizerLLMClient.from_env()
     steps: list[FormalizeStep] = []
     issues: list[FormalizeIssue] = []
 
-    prepared_source = drop_duplicate_document_title_noise(md_text)
+    yield _formalize_progress("clean_body_noise")
+    before = md_text
+    current = clean_body_noise(md_text, llm_client=llm_client)
+    steps.append(FormalizeStep(name="clean_body_noise", changed=current != before))
+
+    yield _formalize_progress("drop_duplicate_document_title_noise")
+    prepared_source = drop_duplicate_document_title_noise(current)
+
+    yield _formalize_progress("extract_heading_tree")
     extracted_tree = extract_heading_tree(prepared_source)
     steps.append(FormalizeStep(name="extract_heading_tree", changed=False))
 
+    yield _formalize_progress("correct_heading_tree")
     corrected_tree = correct_heading_tree(extracted_tree, llm_client=llm_client)
     steps.append(
         FormalizeStep(
@@ -166,42 +228,51 @@ def formalize_markdown(
         )
     )
 
+    yield _formalize_progress("validate_heading_tree_json")
     tree_issues = validate_heading_tree_json(corrected_tree)
     issues.extend(tree_issues)
     steps.append(FormalizeStep(name="validate_heading_tree_json", changed=False, issues=tree_issues))
 
+    yield _formalize_progress("rebuild_markdown_from_heading_tree")
     before = md_text
     current = rebuild_markdown_from_heading_tree(prepared_source, corrected_tree)
     steps.append(FormalizeStep(name="rebuild_markdown_from_heading_tree", changed=current != before))
 
-    before = current
-    current = clean_body_noise(current, llm_client=llm_client)
-    steps.append(FormalizeStep(name="clean_body_noise", changed=current != before))
-
+    yield _formalize_progress("inspect_image_refs")
     image_refs, image_issues = inspect_image_refs(current, source_path=source_path, llm_client=llm_client)
     issues.extend(image_issues)
     steps.append(FormalizeStep(name="inspect_image_refs", changed=False, issues=image_issues))
 
+    yield _formalize_progress("normalize_supported_markdown_syntax")
     before = current
     current, syntax_issues = normalize_supported_markdown_syntax(current, llm_client=llm_client)
     issues.extend(syntax_issues)
     steps.append(FormalizeStep(name="normalize_supported_markdown_syntax", changed=current != before, issues=syntax_issues))
 
+    yield _formalize_progress("remove_ai_response_traces")
     before = current
     current = remove_ai_response_traces(current, llm_client=llm_client)
     steps.append(FormalizeStep(name="remove_ai_response_traces", changed=current != before))
 
+    yield _formalize_progress("finalize_markdown_cleanup")
     before = current
-    current = review_wording_for_title(current, extract_document_title(current), llm_client=llm_client)
-    steps.append(FormalizeStep(name="review_wording_for_title", changed=current != before))
+    current = finalize_markdown_cleanup(current, llm_client=llm_client)
+    steps.append(FormalizeStep(name="finalize_markdown_cleanup", changed=current != before))
 
-    return FormalizeResult(
+    yield FormalizeResult(
         markdown_text=current,
         document_title=extract_document_title(current),
         heading_tree=corrected_tree,
         images=image_refs,
         steps=steps,
         issues=issues,
+    )
+
+
+def _formalize_progress(step_name: str) -> FormalizeProgress:
+    return FormalizeProgress(
+        name=step_name,
+        message=FORMALIZE_STAGE_MESSAGES[step_name],
     )
 
 
@@ -229,17 +300,23 @@ def correct_heading_tree(
     nodes: list[HeadingNode],
     llm_client: FormalizerLLMClient | None = None,
 ) -> list[HeadingNode]:
+    fallback = _correct_heading_tree_locally(nodes)
+    if not _should_try_llm_for_heading_tree(nodes):
+        return fallback
     rewritten = rewrite_with_llm(
         llm_client,
         "correct_heading_tree",
         json.dumps(_heading_tree_payload(nodes), ensure_ascii=False),
-        "Correct the heading tree JSON. Keep exactly one top-level # heading as the document title. Choose the title that matches the article content, keep semantic headings, keep numbering, and remove other # headings, including title variants and appendix-like notes such as usage instructions. Ignore non-content headings such as 目录.",
+        "Correct the heading tree JSON. Keep exactly one top-level # heading as the document title. Choose the title that matches the article content, keep semantic headings, and remove other # headings, including title variants and appendix-like notes such as usage instructions. Ignore non-content headings such as 目录. Normalize every heading title by stripping all numbering-like prefixes before returning JSON. The heading text itself must not start with sequence numbers, chapter numbers, or list markers. Remove prefixes such as 1., 1.2, .4, （一）, (1), 第1章, 第一章, and bullet/list markers. Return clean title text only.",
     )
     if rewritten is not None:
         parsed = _parse_heading_tree_response(rewritten)
         if parsed is not None:
             return parsed
+    return fallback
 
+
+def _correct_heading_tree_locally(nodes: list[HeadingNode]) -> list[HeadingNode]:
     first_h1 = next((node for node in iter_heading_nodes(nodes) if node.level == 1), None)
     if first_h1 is None:
         return _filter_non_content_headings(nodes, document_title="")
@@ -289,14 +366,25 @@ def rebuild_markdown_from_heading_tree(md_text: str, tree: list[HeadingNode]) ->
 
 
 def clean_body_noise(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
-    rewritten = rewrite_with_llm(
-        llm_client,
-        "clean_body_noise",
-        md_text,
-        "Remove visible backslash escapes from ordinary prose only. Keep required syntax, code blocks, inline code, file paths, and URLs.",
-    )
-    if rewritten is not None:
-        md_text = rewritten
+    return _stabilize_lexical_cleanup(md_text)
+
+
+def finalize_markdown_cleanup(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
+    cleaned = _stabilize_lexical_cleanup(md_text)
+    return _normalize_document_heading_lines(cleaned)
+
+
+def _stabilize_lexical_cleanup(md_text: str) -> str:
+    current = md_text
+    for _ in range(LEXICAL_CLEANUP_MAX_ROUNDS):
+        updated = _clean_body_noise_pass(current)
+        if updated == current:
+            return updated
+        current = updated
+    return current
+
+
+def _clean_body_noise_pass(md_text: str) -> str:
     escape_re = re.compile(r"\\([+\-*/.()[\]{}])")
     cleaned: list[str] = []
     in_fence = False
@@ -317,9 +405,14 @@ def clean_body_noise(md_text: str, llm_client: FormalizerLLMClient | None = None
         if in_fence:
             cleaned.append(line)
             continue
-        cleaned.append(_replace_outside_inline_code(line, lambda text: escape_re.sub(r"\1", text)))
+        cleaned.append(
+            _replace_outside_inline_code(
+                line,
+                lambda text: _strip_strong_emphasis_markers(escape_re.sub(r"\1", text)),
+            )
+        )
 
-    return "".join(cleaned).strip("\n") + "\n"
+    return _with_trailing_newline(_normalize_blank_lines("".join(cleaned)))
 
 
 def inspect_image_refs(
@@ -327,14 +420,6 @@ def inspect_image_refs(
     source_path: str | Path | None = None,
     llm_client: FormalizerLLMClient | None = None,
 ) -> tuple[list[ImageRef], list[FormalizeIssue]]:
-    rewritten = rewrite_with_llm(
-        llm_client,
-        "inspect_image_refs",
-        md_text,
-        "Review image captions and target references. Return Markdown with improved captions if needed, but do not remove images or change structure.",
-    )
-    if rewritten is not None:
-        md_text = rewritten
     base_dir = Path(source_path).resolve().parent if source_path else Path.cwd()
     refs: list[ImageRef] = []
     issues: list[FormalizeIssue] = []
@@ -383,14 +468,6 @@ def normalize_supported_markdown_syntax(
     md_text: str,
     llm_client: FormalizerLLMClient | None = None,
 ) -> tuple[str, list[FormalizeIssue]]:
-    rewritten = rewrite_with_llm(
-        llm_client,
-        "normalize_supported_markdown_syntax",
-        md_text,
-        "Normalize unsupported Markdown syntax into supported Markdown. Remove HTML blocks, footnotes, task list syntax, definition lists, and nested blockquotes. Keep headings, paragraphs, lists, tables, images, and fences.",
-    )
-    if rewritten is not None:
-        md_text = rewritten
     issues: list[FormalizeIssue] = []
     output: list[str] = []
     pending_plain_line: tuple[int, str] | None = None
@@ -459,38 +536,21 @@ def normalize_supported_markdown_syntax(
 
 
 def remove_ai_response_traces(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
-    rewritten = rewrite_with_llm(
-        llm_client,
-        "remove_ai_response_traces",
-        md_text,
-        "Remove obvious AI response traces such as framing phrases, explanatory prefaces, and self-referential completion language. Keep the document content only.",
-    )
-    if rewritten is not None:
-        md_text = rewritten
-    trace_re = re.compile(
-        r"^\s*(?:以下是|下面是|当然[，,]|好的[，,]|我已(?:经)?|如需|如果你需要|希望这(?:能|可以)|Here is|Below is)\b.*$",
-        flags=re.I,
-    )
-    lines = [line for line in md_text.splitlines() if not trace_re.match(line)]
-    return _normalize_blank_lines("\n".join(lines)).rstrip() + "\n"
-
-
-def review_wording_for_title(
-    md_text: str,
-    document_title: str,
-    llm_client: FormalizerLLMClient | None = None,
-) -> str:
-    if not document_title:
-        return md_text
-    rewritten = rewrite_with_llm(
-        llm_client,
-        "review_wording_for_title",
-        md_text,
-        f"Review the wording only so it better matches the document title: {document_title}. Do not change facts, section order, or structure.",
-    )
-    if rewritten is not None:
-        md_text = rewritten
-    return _normalize_blank_lines(md_text).rstrip() + "\n"
+    cleaned_blocks: list[str] = []
+    for block, use_llm in _split_markdown_sections_for_ai_cleanup(md_text):
+        decision = _classify_ai_trace_block(block, llm_client=llm_client) if use_llm else None
+        if decision is not None:
+            action = decision.get("action", "")
+            if action == "drop":
+                continue
+            if action == "rewrite":
+                rewritten = decision.get("content", "")
+                if isinstance(rewritten, str) and rewritten.strip():
+                    block = rewritten
+        block = _remove_ai_trace_block_with_rules(block)
+        if block.strip():
+            cleaned_blocks.append(block.strip("\n"))
+    return _normalize_blank_lines("\n\n".join(cleaned_blocks)).rstrip() + "\n"
 
 
 def extract_document_title(md_text: str) -> str:
@@ -505,6 +565,19 @@ def iter_heading_nodes(nodes: list[HeadingNode]):
     for node in nodes:
         yield node
         yield from iter_heading_nodes(node.children)
+
+
+def _should_try_llm_for_heading_tree(nodes: list[HeadingNode]) -> bool:
+    heading_count = sum(1 for _ in iter_heading_nodes(nodes))
+    if heading_count == 0 or heading_count > 12:
+        return False
+
+    h1_titles = [strip_heading_numbering(node.title) for node in iter_heading_nodes(nodes) if node.level == 1]
+    distinct_h1_titles = {title for title in h1_titles if title}
+    if len(distinct_h1_titles) > 1:
+        return True
+
+    return any(_is_non_content_heading(node.title) for node in iter_heading_nodes(nodes))
 
 
 def _filter_non_content_headings(nodes: list[HeadingNode], document_title: str) -> list[HeadingNode]:
@@ -573,6 +646,13 @@ def _rebuild_node(
     children = sorted(node.children, key=lambda item: item.line)
     cursor = node.line + 1
 
+    if skip_body:
+        if children:
+            if not _has_heading_in_range(source_lines, cursor, children[0].line - 1):
+                _append_body_range(output, source_lines, cursor, children[0].line - 1)
+        else:
+            _append_body_range(output, source_lines, cursor, section_end)
+
     for index, child in enumerate(children):
         child_end = section_end
         if index + 1 < len(children):
@@ -595,6 +675,15 @@ def _append_body_range(output: list[str], source_lines: list[str], start_line: i
             output.append(line.rstrip())
 
 
+def _has_heading_in_range(source_lines: list[str], start_line: int, end_line: int) -> bool:
+    for line_no in range(start_line, end_line + 1):
+        if line_no < 1 or line_no > len(source_lines):
+            continue
+        if HEADING_RE.match(source_lines[line_no - 1]):
+            return True
+    return False
+
+
 def _section_end_for_corrected_tree(source_lines: list[str], tree: list[HeadingNode]) -> int:
     kept_heading_lines = {node.line for node in iter_heading_nodes(tree) if node.line > 0}
     if not kept_heading_lines:
@@ -612,6 +701,40 @@ def _replace_outside_inline_code(line: str, replacer) -> str:
     for index in range(0, len(parts), 2):
         parts[index] = replacer(parts[index])
     return "`".join(parts)
+
+
+def _strip_strong_emphasis_markers(text: str) -> str:
+    text = re.sub(r"\*\*(.+?)\*\*", lambda match: match.group(1).strip(), text)
+    text = re.sub(r"__(.+?)__", lambda match: match.group(1).strip(), text)
+    return text
+
+
+def _normalize_document_heading_lines(md_text: str) -> str:
+    normalized: list[str] = []
+    in_fence = False
+    fence_char = ""
+
+    for line in md_text.splitlines(keepends=True):
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+            elif marker[0] == fence_char:
+                in_fence = False
+                fence_char = ""
+            normalized.append(line)
+            continue
+        if in_fence:
+            normalized.append(line)
+            continue
+
+        line_ending = "\n" if line.endswith("\n") else ""
+        content = line[:-1] if line_ending else line
+        normalized.append(_normalize_heading_line(content) + line_ending)
+
+    return _with_trailing_newline(_normalize_blank_lines("".join(normalized)))
 
 
 def _iter_image_targets(line: str):
@@ -669,6 +792,146 @@ def _normalize_blank_lines(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n").replace("\r", "\n"))
 
 
+def _with_trailing_newline(text: str) -> str:
+    stripped = text.strip("\n")
+    return stripped + ("\n" if stripped else "")
+
+
+def _split_markdown_sections_for_ai_cleanup(md_text: str) -> list[tuple[str, bool]]:
+    normalized = md_text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    heading_lines = [index for index, line in enumerate(lines) if HEADING_RE.match(line)]
+    if not heading_lines:
+        stripped = normalized.strip()
+        return _split_section_for_ai_cleanup(stripped, use_llm=True) if stripped else []
+
+    sections: list[tuple[str, bool]] = []
+    first_heading = heading_lines[0]
+    if any(line.strip() for line in lines[:first_heading]):
+        prefix = "\n".join(lines[:first_heading]).strip("\n")
+        if prefix.strip():
+            sections.append((prefix, False))
+
+    for position, start in enumerate(heading_lines):
+        end = heading_lines[position + 1] if position + 1 < len(heading_lines) else len(lines)
+        block = "\n".join(lines[start:end]).strip("\n")
+        if not block.strip():
+            continue
+        sections.extend(_split_section_for_ai_cleanup(block, use_llm=position == len(heading_lines) - 1))
+    return sections
+
+
+def _split_section_for_ai_cleanup(block: str, use_llm: bool) -> list[tuple[str, bool]]:
+    if not use_llm:
+        return [(block, False)]
+
+    paragraph_blocks = _split_markdown_paragraph_blocks(block)
+    candidate_start = _find_ai_trace_candidate_start(paragraph_blocks)
+    if candidate_start is None:
+        return [(block, False)]
+
+    prefix = "\n\n".join(paragraph_blocks[:candidate_start]).strip("\n")
+    tail = "\n\n".join(paragraph_blocks[candidate_start:]).strip("\n")
+    sections: list[tuple[str, bool]] = []
+    if prefix:
+        sections.append((prefix, False))
+    if tail:
+        sections.append((tail, True))
+    return sections
+
+
+def _split_markdown_paragraph_blocks(block: str) -> list[str]:
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in block.split("\n"):
+        if line.strip():
+            current.append(line)
+            continue
+        if current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _find_ai_trace_candidate_start(paragraph_blocks: list[str]) -> int | None:
+    candidate_indices = [index for index, block in enumerate(paragraph_blocks) if _is_ai_trace_candidate_block(block)]
+    if not candidate_indices:
+        return None
+    return max(0, candidate_indices[0] - AI_TRACE_LLM_CONTEXT_BLOCKS)
+
+
+def _classify_ai_trace_block(
+    block: str,
+    llm_client: FormalizerLLMClient | None = None,
+) -> dict[str, str] | None:
+    if llm_client is None:
+        return None
+    rewritten = rewrite_with_llm(
+        llm_client,
+        "remove_ai_response_traces",
+        block,
+        (
+            "Classify whether this Markdown block is an AI response trace. "
+            "Return JSON only with keys action, reason, and content. "
+            "action must be one of keep, drop, or rewrite. "
+            "Use drop for assistant framing, offer-to-continue text, prompt-generation offers, "
+            "meta notes such as May contain AI-generated content, and self-referential completion language. "
+            "Use rewrite only when the block mixes useful document content with removable AI framing. "
+            "Use keep for normal document content. Preserve Markdown syntax in content."
+        ),
+    )
+    if not rewritten:
+        return None
+    try:
+        payload = json.loads(rewritten)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    action = payload.get("action")
+    if action not in {"keep", "drop", "rewrite"}:
+        return None
+    result = {"action": str(action), "reason": str(payload.get("reason", ""))}
+    content = payload.get("content")
+    if isinstance(content, str):
+        result["content"] = content
+    return result
+
+
+def _is_ai_trace_candidate_block(block: str) -> bool:
+    lines = block.splitlines()
+    if any(AI_TRACE_LINE_RE.match(line) or AI_TRACE_NOTE_RE.match(line) for line in lines):
+        return True
+    if any(line.lstrip().startswith(">") for line in lines):
+        return True
+    return bool(AI_TRACE_CANDIDATE_RE.search(block))
+
+
+def _remove_ai_trace_block_with_rules(block: str) -> str:
+    blank_quote_re = re.compile(r"^\s*(?:>\s*)+$")
+    lines = block.splitlines()
+    meaningful_lines = [line for line in lines if line.strip()]
+    if meaningful_lines and all(
+        AI_TRACE_LINE_RE.match(line) or AI_TRACE_NOTE_RE.match(line) or blank_quote_re.match(line)
+        for line in meaningful_lines
+    ):
+        return ""
+
+    cleaned: list[str] = []
+    removed_trace_block = False
+    for line in lines:
+        if AI_TRACE_LINE_RE.match(line) or AI_TRACE_NOTE_RE.match(line):
+            removed_trace_block = True
+            continue
+        if removed_trace_block and blank_quote_re.match(line):
+            continue
+        removed_trace_block = False
+        cleaned.append(line)
+    return "\n".join(cleaned).strip("\n")
+
+
 def _contains_footnote_marker(text: str) -> bool:
     return bool(re.search(r"\[\^[^\]]+\]", text))
 
@@ -709,8 +972,21 @@ def drop_duplicate_document_title_noise(md_text: str) -> str:
 
 def strip_heading_numbering(title: str) -> str:
     value = title.strip()
-    for pattern in (CHINESE_SECTION_RE, PAREN_SECTION_RE, ARABIC_SECTION_RE):
-        value = pattern.sub("", value).strip()
+    patterns = (
+        CHAPTER_LABEL_RE,
+        PAREN_SECTION_RE,
+        PAREN_ARABIC_RE,
+        CHINESE_SECTION_RE,
+        ARABIC_SECTION_RE,
+        LEADING_LIST_MARKER_RE,
+        LEADING_PUNCTUATION_RE,
+    )
+    while True:
+        previous = value
+        for pattern in patterns:
+            value = pattern.sub("", value).strip()
+        if value == previous:
+            break
     return value
 
 

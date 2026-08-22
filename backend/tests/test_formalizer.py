@@ -1,17 +1,20 @@
+import json
 from pathlib import Path
 
 from backend.md2word.formalizer import (
+    FORMALIZE_STAGE_MESSAGES,
     clean_body_noise,
     correct_heading_tree,
     extract_heading_tree,
+    finalize_markdown_cleanup,
     formalize_markdown,
+    iter_formalize_markdown,
     HeadingNode,
     inspect_image_refs,
     normalize_supported_markdown_syntax,
     rebuild_markdown_from_heading_tree,
     remove_ai_response_traces,
     load_formalizer_llm_config,
-    review_wording_for_title,
 )
 
 
@@ -65,21 +68,53 @@ def test_rebuild_markdown_from_heading_tree_stops_before_unkept_later_heading():
     assert "粘贴说明" not in rebuilt
 
 
+def test_rebuild_markdown_from_heading_tree_keeps_intro_body_under_root_title():
+    source = "# 系统说明书\n\n导语正文\n\n## 概述\n\n分节正文\n"
+    tree = correct_heading_tree(extract_heading_tree(source))
+
+    rebuilt = rebuild_markdown_from_heading_tree(source, tree)
+
+    assert "# 系统说明书" in rebuilt
+    assert "导语正文" in rebuilt
+    assert "## 概述" in rebuilt
+    assert "分节正文" in rebuilt
+
+
 def test_formalize_markdown_runs_steps_in_skill_order():
     result = formalize_markdown("# 系统说明书\n\n## 概述\n\n正文\n")
 
     assert [step.name for step in result.steps] == [
+        "clean_body_noise",
         "extract_heading_tree",
         "correct_heading_tree",
         "validate_heading_tree_json",
         "rebuild_markdown_from_heading_tree",
-        "clean_body_noise",
         "inspect_image_refs",
         "normalize_supported_markdown_syntax",
         "remove_ai_response_traces",
-        "review_wording_for_title",
+        "finalize_markdown_cleanup",
     ]
     assert result.document_title == "系统说明书"
+
+
+def test_iter_formalize_markdown_reports_ten_stage_messages_before_result():
+    events = list(iter_formalize_markdown("# 系统说明书\n\n## 概述\n\n正文\n"))
+
+    stage_names = [event.name for event in events[:-1]]
+    assert stage_names == [
+        "clean_body_noise",
+        "drop_duplicate_document_title_noise",
+        "extract_heading_tree",
+        "correct_heading_tree",
+        "validate_heading_tree_json",
+        "rebuild_markdown_from_heading_tree",
+        "inspect_image_refs",
+        "normalize_supported_markdown_syntax",
+        "remove_ai_response_traces",
+        "finalize_markdown_cleanup",
+    ]
+    assert [event.message for event in events[:-1]] == [FORMALIZE_STAGE_MESSAGES[name] for name in stage_names]
+    assert hasattr(events[-1], "markdown_text")
 
 
 def test_formalize_markdown_strips_heading_numbering():
@@ -91,6 +126,35 @@ def test_formalize_markdown_strips_heading_numbering():
     assert "### 原创方案" in result.markdown_text
     assert "1. 系统说明书" not in result.markdown_text
     assert "一、项目背景" not in result.markdown_text
+
+
+def test_formalize_markdown_strips_escaped_arabic_heading_numbering():
+    result = formalize_markdown("# 标题\n\n### 9\\.4 第四层【材料领域高阶通用技术成果】\n\n正文\n")
+
+    assert "### 第四层【材料领域高阶通用技术成果】" in result.markdown_text
+    assert "9\\.4 第四层" not in result.markdown_text
+    assert ".4 第四层" not in result.markdown_text
+
+
+def test_formalize_markdown_strips_mixed_heading_numbering_variants():
+    result = formalize_markdown(
+        "# 标题\n\n"
+        "## 第一章 项目背景\n\n"
+        "### （一）建设目标\n\n"
+        "#### (1) 交付范围\n\n"
+        "##### 2.3.1 核心模块\n\n"
+        "###### - 附加说明\n"
+    )
+
+    assert "## 项目背景" in result.markdown_text
+    assert "### 建设目标" in result.markdown_text
+    assert "#### 交付范围" in result.markdown_text
+    assert "##### 核心模块" in result.markdown_text
+    assert "###### 附加说明" in result.markdown_text
+    assert "第一章 项目背景" not in result.markdown_text
+    assert "（一）建设目标" not in result.markdown_text
+    assert "(1) 交付范围" not in result.markdown_text
+    assert "2.3.1 核心模块" not in result.markdown_text
 
 
 def test_formalize_markdown_keeps_documents_without_h1():
@@ -119,8 +183,8 @@ def test_formalize_markdown_removes_catalog_and_duplicate_title_body():
     assert "## 目录" not in result.markdown_text
     assert "目录内容" not in result.markdown_text
     assert "重复标题正文" not in result.markdown_text
-    assert "## 第一章 概述" in result.markdown_text
-    assert "## 第二章 功能" in result.markdown_text
+    assert "## 概述" in result.markdown_text
+    assert "## 功能" in result.markdown_text
 
 
 def test_clean_body_noise_preserves_code_regions():
@@ -130,6 +194,32 @@ def test_clean_body_noise_preserves_code_regions():
     assert "正文 A.B" in result
     assert "`C\\.D`" in result
     assert "保留\\*代码" in result
+
+
+def test_clean_body_noise_strips_strong_emphasis_markers_in_prose():
+    result = clean_body_noise(
+        "1. **React‑Generator 候选生成体系**：正文\n\n`**保留代码**`\n\n```md\n**保留围栏代码**\n```"
+    )
+
+    assert "**React‑Generator 候选生成体系**" not in result
+    assert "React‑Generator 候选生成体系：正文" in result
+    assert "`**保留代码**`" in result
+    assert "**保留围栏代码**" in result
+
+
+def test_clean_body_noise_strips_loose_strong_emphasis_markers_in_prose():
+    result = clean_body_noise("正文 **“生成即伴随验证” 的可验证材料数字化工具体系 **\n")
+
+    assert "**" not in result
+    assert "“生成即伴随验证” 的可验证材料数字化工具体系" in result
+
+
+def test_finalize_markdown_cleanup_normalizes_heading_lines():
+    result = finalize_markdown_cleanup("# 9\\.4 第四层\n\n\\*\\*正文\\*\\*\n")
+
+    assert result.startswith("# 第四层")
+    assert "\\*\\*" not in result
+    assert "正文" in result
 
 
 def test_inspect_image_refs_marks_unsupported_extensions(tmp_path: Path):
@@ -202,26 +292,79 @@ class StubLLM:
         self.calls.append((step_name, markdown_text, instruction))
         if step_name == "correct_heading_tree":
             return '[{"level": 1, "title": "标题", "line": 1, "children": []}]'
+        if step_name == "remove_ai_response_traces":
+            if "如果你需要" in markdown_text or "AI-generated content" in markdown_text or "以下是整理结果" in markdown_text:
+                cleaned_lines = []
+                for line in markdown_text.splitlines():
+                    if "如果你需要" in line or "AI-generated content" in line or "以下是整理结果" in line:
+                        continue
+                    if line.strip() == ">":
+                        continue
+                    cleaned_lines.append(line)
+                cleaned = "\n".join(cleaned_lines).strip()
+                if cleaned:
+                    return json.dumps({"action": "rewrite", "reason": "ai_trace", "content": cleaned}, ensure_ascii=False)
+                return '{"action":"drop","reason":"ai_trace"}'
+            return '{"action":"keep","reason":"content"}'
         return markdown_text
+
+
+class RewriteEscapedTailLLM:
+    def rewrite(self, step_name: str, markdown_text: str, instruction: str = ""):
+        if step_name == "correct_heading_tree":
+            return None
+        if step_name == "remove_ai_response_traces":
+            return json.dumps(
+                {
+                    "action": "rewrite",
+                    "reason": "ai_trace",
+                    "content": "### 9\\.4 第四层\n\n\\*\\*保留正文\\*\\*",
+                },
+                ensure_ascii=False,
+            )
+        return None
 
 
 def test_llm_client_is_used_by_formalizer_hooks(tmp_path: Path):
     llm = StubLLM()
 
     result = formalize_markdown(
-        "# 标题\n\n正文\\(噪声\\)\n\n![图示](missing.png)\n\n> > 引用\n",
+        "# 标题A\n\n正文\\(噪声\\)\n\n# 标题B\n\n![图示](missing.png)\n\n> 如果你需要，我可以继续输出更多内容\n",
         source_path=tmp_path / "doc.md",
         llm_client=llm,
     )
 
     assert llm.calls
     assert any(call[0] == "correct_heading_tree" for call in llm.calls)
-    assert any(call[0] == "clean_body_noise" for call in llm.calls)
-    assert any(call[0] == "inspect_image_refs" for call in llm.calls)
-    assert any(call[0] == "normalize_supported_markdown_syntax" for call in llm.calls)
-    assert any(call[0] == "remove_ai_response_traces" for call in llm.calls)
-    assert any(call[0] == "review_wording_for_title" for call in llm.calls)
+    assert all(call[0] != "clean_body_noise" for call in llm.calls)
+    assert all(call[0] != "inspect_image_refs" for call in llm.calls)
+    assert all(call[0] != "normalize_supported_markdown_syntax" for call in llm.calls)
     assert result.markdown_text.startswith("# 标题")
+
+
+def test_formalize_markdown_runs_final_cleanup_after_ai_trace_rewrite():
+    result = formalize_markdown(
+        "# 标题\n\n## 尾节\n\n> 如果你需要，我可以继续输出更多内容\n",
+        llm_client=RewriteEscapedTailLLM(),
+    )
+
+    assert "9\\.4" not in result.markdown_text
+    assert "\\*\\*" not in result.markdown_text
+    assert "### 第四层" in result.markdown_text
+    assert "保留正文" in result.markdown_text
+
+
+def test_correct_heading_tree_skips_llm_for_large_tree():
+    llm = StubLLM()
+    tree = extract_heading_tree(
+        "# 标题\n\n"
+        + "\n".join(f"## 第{i}节 内容{i}" for i in range(1, 15))
+        + "\n"
+    )
+
+    correct_heading_tree(tree, llm_client=llm)
+
+    assert all(call[0] != "correct_heading_tree" for call in llm.calls)
 
 
 def test_remove_ai_response_traces_can_be_called_directly_with_llm():
@@ -229,17 +372,62 @@ def test_remove_ai_response_traces_can_be_called_directly_with_llm():
 
     result = remove_ai_response_traces("以下是整理结果。\n\n正文", llm_client=llm)
 
-    assert result.startswith("以下是整理结果。")
+    assert "以下是整理结果。" not in result
+    assert result.startswith("正文")
     assert any(call[0] == "remove_ai_response_traces" for call in llm.calls)
 
 
-def test_review_wording_for_title_uses_llm_when_present():
+def test_remove_ai_response_traces_llm_can_drop_blockquote_trace_block():
     llm = StubLLM()
 
-    result = review_wording_for_title("正文", "标题", llm_client=llm)
+    result = remove_ai_response_traces(
+        "正文\n\n> 如果你需要，我可以继续输出 8 个 UI 页面的 AI 绘图提示词。\n>\n> (Note: May contain AI-generated content.)\n",
+        llm_client=llm,
+    )
 
-    assert result.endswith("\n")
-    assert any(call[0] == "review_wording_for_title" for call in llm.calls)
+    assert "如果你需要" not in result
+    assert "AI-generated content" not in result
+    assert "正文" in result
+    assert any(call[0] == "remove_ai_response_traces" for call in llm.calls)
+
+
+def test_remove_ai_response_traces_only_sends_last_section_to_llm():
+    llm = StubLLM()
+
+    result = remove_ai_response_traces(
+        "# 第一节\n\n"
+        "保留内容\n\n"
+        "## 第二节\n\n"
+        "段落一\n\n"
+        "段落二\n\n"
+        "段落三\n\n"
+        "段落四\n\n"
+        "段落五\n\n"
+        "段落六\n\n"
+        "正常内容\n\n"
+        "> (Note: May contain AI-generated content.)\n",
+        llm_client=llm,
+    )
+
+    ai_calls = [call for call in llm.calls if call[0] == "remove_ai_response_traces"]
+    assert len(ai_calls) == 1
+    assert ai_calls[0][1].startswith("正常内容")
+    assert "# 第一节" in result
+    assert "保留内容" in result
+    assert "第二节" in result
+    assert "段落一" in result
+    assert "段落六" in result
+
+
+def test_remove_ai_response_traces_removes_blockquote_ai_fragments():
+    result = remove_ai_response_traces(
+        "正文\n\n> 如果你需要，我可以继续输出 8 个 UI 页面的 AI 绘图提示词。\n>\n> (Note: May contain AI-generated content.)\n"
+    )
+
+    assert "如果你需要" not in result
+    assert "AI-generated content" not in result
+    assert "\n>\n" not in result
+    assert "正文" in result
 
 
 def test_correct_heading_tree_prompt_requires_single_h1():
@@ -251,12 +439,16 @@ def test_correct_heading_tree_prompt_requires_single_h1():
     prompt = next(call[2] for call in llm.calls if call[0] == "correct_heading_tree")
     assert "exactly one top-level # heading" in prompt
     assert "remove other # headings" in prompt
+    assert "Normalize every heading title by stripping all numbering-like prefixes" in prompt
+    assert "1.2" in prompt
+    assert "第1章" in prompt
+    assert "9\\.4" not in prompt
 
 
 def test_load_formalizer_llm_config_returns_none_without_env(monkeypatch):
-    monkeypatch.delenv("MD2WORD_FORMALIZER_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("MD2WORD_FORMALIZER_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("MD2WORD_FORMALIZER_LLM_MODEL", raising=False)
-    monkeypatch.delenv("MD2WORD_FORMALIZER_LLM_TIMEOUT", raising=False)
+    monkeypatch.delenv("MD2WORD_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("MD2WORD_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("MD2WORD_LLM_MODEL", raising=False)
+    monkeypatch.delenv("MD2WORD_LLM_CLEANER_TIMEOUT", raising=False)
 
     assert load_formalizer_llm_config() is None
