@@ -9,12 +9,14 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+backend/.venv/
 
 # Build and packaging artifacts
 build/
 dist/
 *.egg-info/
 .eggs/
+frontend/dist/
 
 # Tooling caches
 .pytest_cache/
@@ -32,6 +34,8 @@ dist/
 # Logs and temp files
 *.log
 tmp/
+node_modules/
+frontend/node_modules/
 
 # Test artifacts
 test/output_*.docx

@@ -135,7 +135,7 @@ describe('Md2WordApp', () => {
   test('download uses utf8 filename from content disposition when available', async () => {
     const urlMock = installUrlMocks()
     const originalCreateElement = document.createElement.bind(document)
-    let createdAnchor: HTMLAnchorElement | null = null
+    let createdAnchor!: HTMLAnchorElement
     vi.spyOn(document, 'createElement').mockImplementation(((tagName: string) => {
       const element = originalCreateElement(tagName)
       if (tagName.toLowerCase() === 'a') {
@@ -162,7 +162,7 @@ describe('Md2WordApp', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始生成文档' }))
 
     await waitFor(() => expect(urlMock.createObjectURL).toHaveBeenCalled())
-    expect(createdAnchor?.download).toBe('可验证反应原生材料模型（ReacVer）软件化构建方案.docx')
+    expect(createdAnchor.getAttribute('download')).toBe('可验证反应原生材料模型（ReacVer）软件化构建方案.docx')
   })
 
   test('error toast can be dismissed manually', async () => {

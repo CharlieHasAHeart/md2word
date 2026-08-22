@@ -6,16 +6,28 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN pip install --no-cache-dir uv
 
-WORKDIR /app/backend
-COPY backend/pyproject.toml /app/backend/pyproject.toml
-
 FROM base AS dev
-RUN uv sync --extra test
+WORKDIR /app/backend
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --frozen --extra test
 WORKDIR /app
 CMD ["sh", "-lc", "cd /app/backend && uv run uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"]
 
 FROM base AS prod
+WORKDIR /app/backend
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
 COPY backend /app/backend
-RUN uv sync --no-dev
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/app/backend/.venv/bin:$PATH"
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
 WORKDIR /app
-CMD ["sh", "-lc", "cd /app/backend && uv run uvicorn backend.main:app --host 0.0.0.0 --port 8000"]
+EXPOSE 8000
+
+CMD ["sh", "-lc", "cd /app/backend && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]
