@@ -21,8 +21,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend /app/backend
 RUN uv sync --frozen --no-dev
 
-ENV PATH="/app/backend/.venv/bin:$PATH"
-
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
 
@@ -30,4 +28,4 @@ USER appuser
 WORKDIR /app
 EXPOSE 8000
 
-CMD ["sh", "-lc", "cd /app/backend && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]
+CMD ["sh", "-lc", "cd /app/backend && exec /app/backend/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]
