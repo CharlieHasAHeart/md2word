@@ -50,7 +50,7 @@ async def read_stream_events(response) -> list[dict]:
 def test_formalize_endpoint_returns_cleaned_markdown_defaults():
     upload = DummyUpload("demo.md", "# 系统说明书\n\n## 概述\n\n正文\n")
 
-    response = asyncio.run(backend_main.formalize_markdown_endpoint(markdown_file=upload, file=None))
+    response = asyncio.run(backend_main.formalize_markdown_endpoint(markdown_file=upload, file=None, mode="baseline"))
     events = asyncio.run(read_stream_events(response))
     payload = events[-1]["result"]
 
@@ -60,7 +60,16 @@ def test_formalize_endpoint_returns_cleaned_markdown_defaults():
     assert payload["cleaned_markdown"].startswith("# 系统说明书")
     assert payload["preview"] == payload["cleaned_markdown"]
     assert payload["file_name"] == "demo.md"
-    assert [event["type"] for event in events[:-1]] == ["stage"] * 10
+    assert [event["type"] for event in events[:-1]] == ["stage"] * 5
+
+
+def test_formalize_endpoint_supports_ai_enhanced_mode():
+    upload = DummyUpload("demo.md", "# 系统说明书\n\n## 概述\n\n正文\n")
+
+    response = asyncio.run(backend_main.formalize_markdown_endpoint(markdown_file=upload, file=None, mode="ai_enhanced"))
+    events = asyncio.run(read_stream_events(response))
+
+    assert [event["type"] for event in events[:-1]] == ["stage"] * 11
 
 
 def test_convert_endpoint_uses_long_template(tmp_path: Path, monkeypatch):

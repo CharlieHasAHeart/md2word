@@ -3,14 +3,16 @@ from pathlib import Path
 
 from backend.md2word.formalizer import (
     FORMALIZE_STAGE_MESSAGES,
-    clean_body_noise,
     correct_heading_tree,
     extract_heading_tree,
-    finalize_markdown_cleanup,
     formalize_markdown,
     iter_formalize_markdown,
     HeadingNode,
     inspect_image_refs,
+    normalize_blank_lines,
+    normalize_heading_lines,
+    normalize_escaped_characters,
+    normalize_inline_spacing,
     normalize_supported_markdown_syntax,
     rebuild_markdown_from_heading_tree,
     remove_ai_response_traces,
@@ -84,35 +86,39 @@ def test_formalize_markdown_runs_steps_in_skill_order():
     result = formalize_markdown("# 系统说明书\n\n## 概述\n\n正文\n")
 
     assert [step.name for step in result.steps] == [
-        "clean_body_noise",
+        "normalize_escaped_characters",
+        "normalize_supported_markdown_syntax",
+        "normalize_heading_lines",
+        "normalize_blank_lines",
+        "normalize_inline_spacing",
         "extract_heading_tree",
         "correct_heading_tree",
         "validate_heading_tree_json",
         "rebuild_markdown_from_heading_tree",
         "inspect_image_refs",
-        "normalize_supported_markdown_syntax",
         "remove_ai_response_traces",
-        "finalize_markdown_cleanup",
     ]
     assert result.document_title == "系统说明书"
 
 
-def test_iter_formalize_markdown_reports_ten_stage_messages_before_result():
+def test_iter_formalize_markdown_reports_eleven_stage_messages_before_result():
     events = list(iter_formalize_markdown("# 系统说明书\n\n## 概述\n\n正文\n"))
 
     stage_names = [event.name for event in events[:-1]]
     assert stage_names == [
-        "clean_body_noise",
-        "drop_duplicate_document_title_noise",
+        "normalize_escaped_characters",
+        "normalize_supported_markdown_syntax",
+        "normalize_heading_lines",
+        "normalize_blank_lines",
+        "normalize_inline_spacing",
         "extract_heading_tree",
         "correct_heading_tree",
         "validate_heading_tree_json",
         "rebuild_markdown_from_heading_tree",
         "inspect_image_refs",
-        "normalize_supported_markdown_syntax",
         "remove_ai_response_traces",
-        "finalize_markdown_cleanup",
     ]
+    assert len(stage_names) == 11
     assert [event.message for event in events[:-1]] == [FORMALIZE_STAGE_MESSAGES[name] for name in stage_names]
     assert hasattr(events[-1], "markdown_text")
 
@@ -165,7 +171,7 @@ def test_formalize_markdown_keeps_documents_without_h1():
     assert result.markdown_text.endswith("\n")
 
 
-def test_formalize_markdown_removes_catalog_and_duplicate_title_body():
+def test_formalize_markdown_removes_catalog_and_keeps_duplicate_title_body():
     result = formalize_markdown(
         "# 系统说明书\n\n"
         "封面噪声\n\n"
@@ -182,13 +188,13 @@ def test_formalize_markdown_removes_catalog_and_duplicate_title_body():
     assert "封面噪声" not in result.markdown_text
     assert "## 目录" not in result.markdown_text
     assert "目录内容" not in result.markdown_text
-    assert "重复标题正文" not in result.markdown_text
+    assert "重复标题正文" in result.markdown_text
     assert "## 概述" in result.markdown_text
     assert "## 功能" in result.markdown_text
 
 
-def test_clean_body_noise_preserves_code_regions():
-    result = clean_body_noise("## 项目\\(概述\\)\n\n正文 A\\.B 和 `C\\.D`\n\n```md\n保留\\*代码\n```")
+def test_normalize_escaped_characters_preserves_code_regions():
+    result = normalize_escaped_characters("## 项目\\(概述\\)\n\n正文 A\\.B 和 `C\\.D`\n\n```md\n保留\\*代码\n```")
 
     assert "## 项目(概述)" in result
     assert "正文 A.B" in result
@@ -196,30 +202,50 @@ def test_clean_body_noise_preserves_code_regions():
     assert "保留\\*代码" in result
 
 
-def test_clean_body_noise_strips_strong_emphasis_markers_in_prose():
-    result = clean_body_noise(
+def test_normalize_escaped_characters_preserves_strong_emphasis_markers_in_prose():
+    result = normalize_escaped_characters(
         "1. **React‑Generator 候选生成体系**：正文\n\n`**保留代码**`\n\n```md\n**保留围栏代码**\n```"
     )
 
-    assert "**React‑Generator 候选生成体系**" not in result
-    assert "React‑Generator 候选生成体系：正文" in result
+    assert "**React‑Generator 候选生成体系**：正文" in result
     assert "`**保留代码**`" in result
     assert "**保留围栏代码**" in result
 
 
-def test_clean_body_noise_strips_loose_strong_emphasis_markers_in_prose():
-    result = clean_body_noise("正文 **“生成即伴随验证” 的可验证材料数字化工具体系 **\n")
+def test_normalize_escaped_characters_preserves_loose_strong_emphasis_markers_in_prose():
+    result = normalize_escaped_characters("正文 **“生成即伴随验证” 的可验证材料数字化工具体系 **\n")
 
-    assert "**" not in result
-    assert "“生成即伴随验证” 的可验证材料数字化工具体系" in result
+    assert "正文 **“生成即伴随验证” 的可验证材料数字化工具体系 **" in result
 
 
-def test_finalize_markdown_cleanup_normalizes_heading_lines():
-    result = finalize_markdown_cleanup("# 9\\.4 第四层\n\n\\*\\*正文\\*\\*\n")
+def test_normalize_heading_lines_strips_heading_numbering():
+    result = normalize_heading_lines("# 1. 标题\n\n## （一）概述\n")
 
-    assert result.startswith("# 第四层")
-    assert "\\*\\*" not in result
-    assert "正文" in result
+    assert result.startswith("# 标题")
+    assert "## 概述" in result
+
+
+def test_normalize_blank_lines_collapses_runs_and_keeps_trailing_newline():
+    result = normalize_blank_lines("第一段\n\n\n\n第二段")
+
+    assert result == "第一段\n\n第二段\n"
+
+
+def test_normalize_blank_lines_treats_whitespace_only_lines_as_blank():
+    result = normalize_blank_lines("第一段\n   \n\t\n第二段\n")
+
+    assert result == "第一段\n\n第二段\n"
+
+
+def test_normalize_inline_spacing_removes_spaces_between_cjk_and_ascii_text():
+    result = normalize_inline_spacing(
+        "# 标题 OpenAI 接口\n\n正文 API 测试 ( v1.0 ) 与 C++ 模块。\n\n- 列表 HTTP 请求\n\n`保留 API test`\n"
+    )
+
+    assert "# 标题OpenAI接口" in result
+    assert "正文API测试(v1.0)与C++模块。" in result
+    assert "- 列表HTTP请求" in result
+    assert "`保留 API test`" in result
 
 
 def test_inspect_image_refs_marks_unsupported_extensions(tmp_path: Path):
@@ -284,6 +310,19 @@ def test_normalize_supported_markdown_syntax_preserves_code_and_blockquotes():
     assert any(issue.code == "unsupported_markdown_normalized" for issue in issues)
 
 
+def test_normalize_supported_markdown_syntax_strips_strong_emphasis_in_prose():
+    result, issues = normalize_supported_markdown_syntax(
+        "正文 **重点说明**\n\n__另一段强调__\n\n`**保留行内代码**`\n"
+    )
+
+    assert "正文 重点说明" in result
+    assert "另一段强调" in result
+    assert "**重点说明**" not in result
+    assert "__另一段强调__" not in result
+    assert "`**保留行内代码**`" in result
+    assert any(issue.code == "unsupported_markdown_normalized" for issue in issues)
+
+
 class StubLLM:
     def __init__(self):
         self.calls = []
@@ -336,22 +375,20 @@ def test_llm_client_is_used_by_formalizer_hooks(tmp_path: Path):
 
     assert llm.calls
     assert any(call[0] == "correct_heading_tree" for call in llm.calls)
-    assert all(call[0] != "clean_body_noise" for call in llm.calls)
+    assert all(call[0] != "normalize_escaped_characters" for call in llm.calls)
     assert all(call[0] != "inspect_image_refs" for call in llm.calls)
     assert all(call[0] != "normalize_supported_markdown_syntax" for call in llm.calls)
     assert result.markdown_text.startswith("# 标题")
 
 
-def test_formalize_markdown_runs_final_cleanup_after_ai_trace_rewrite():
+def test_formalize_markdown_keeps_ai_trace_rewrite_output_without_final_cleanup():
     result = formalize_markdown(
         "# 标题\n\n## 尾节\n\n> 如果你需要，我可以继续输出更多内容\n",
         llm_client=RewriteEscapedTailLLM(),
     )
 
-    assert "9\\.4" not in result.markdown_text
-    assert "\\*\\*" not in result.markdown_text
-    assert "### 第四层" in result.markdown_text
-    assert "保留正文" in result.markdown_text
+    assert "### 9\\.4 第四层" in result.markdown_text
+    assert "\\*\\*保留正文\\*\\*" in result.markdown_text
 
 
 def test_correct_heading_tree_skips_llm_for_large_tree():

@@ -95,7 +95,7 @@ def test_render_markdown_to_document_keeps_reference_ordered_list_with_blank_lin
     assert first_ilvl == second_ilvl == third_ilvl == 0
 
 
-def test_convert_markdown_to_docx_writes_docx_and_uses_formalizer(tmp_path: Path):
+def test_convert_markdown_to_docx_writes_docx_and_uses_baseline_formalizer(tmp_path: Path):
     md_path = tmp_path / "input.md"
     output_path = tmp_path / "output.docx"
     md_path.write_text(
@@ -116,10 +116,34 @@ def test_convert_markdown_to_docx_writes_docx_and_uses_formalizer(tmp_path: Path
     texts = paragraph_texts(output_path)
     assert "系统说明书" in texts
     assert "概述" in texts
-    assert "正文 A.B" in texts
+    assert "正文A.B" in texts
+    assert "目录" in texts
+    assert "封面噪声" in texts
+    assert texts.count("系统说明书") == 1
+
+
+def test_convert_markdown_to_docx_supports_ai_enhanced_mode(tmp_path: Path):
+    md_path = tmp_path / "input.md"
+    output_path = tmp_path / "output.docx"
+    md_path.write_text(
+        "# 系统说明书\n\n"
+        "封面噪声\n\n"
+        "## 目录\n\n"
+        "目录内容\n\n"
+        "## 第一章 概述\n\n"
+        "正文 A\\.B\n",
+        encoding="utf-8",
+    )
+
+    result = convert_markdown_to_docx(md_path, output_path, mode="ai_enhanced")
+
+    assert result.output_path == output_path
+    texts = paragraph_texts(output_path)
+    assert "系统说明书" in texts
+    assert "概述" in texts
+    assert "正文A.B" in texts
     assert "目录" not in texts
     assert "封面噪声" not in texts
-    assert texts.count("系统说明书") == 1
 
 
 def test_convert_markdown_to_docx_embeds_existing_image(tmp_path: Path):

@@ -35,6 +35,8 @@ export type FormalizeStreamEvent = FormalizeStageEvent | FormalizeCompleteEvent
 
 export type WizardStep = 1 | 2 | 3 | 4
 
+export type ProcessingMode = 'baseline' | 'ai_enhanced'
+
 export type ToastTone = 'info' | 'error'
 
 export type ToastState = {

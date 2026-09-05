@@ -1,24 +1,10 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: prod
-    container_name: multi-space-backend
-    env_file:
-      - .env
-    expose:
-      - "8000"
-    restart: unless-stopped
-
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
       target: prod
     container_name: multi-space-frontend
-    depends_on:
-      - backend
     ports:
       - "8080:80"
     restart: unless-stopped

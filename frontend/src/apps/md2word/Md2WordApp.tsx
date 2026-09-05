@@ -7,10 +7,10 @@ import { ImportStep } from './components/steps/ImportStep'
 import { ResultStep } from './components/steps/ResultStep'
 import { ReviewStep } from './components/steps/ReviewStep'
 import { TemplateStep } from './components/steps/TemplateStep'
-import type { FormalizeResult, FormalizeStreamEvent, TemplateItem, ToastState, ToastTone, WizardStep } from './types'
+import type { FormalizeResult, FormalizeStreamEvent, ProcessingMode, TemplateItem, ToastState, ToastTone, WizardStep } from './types'
 import { buildOutputName } from './utils'
 
-const INITIAL_FORMALIZE_STATUS = '正在清理正文噪音'
+const INITIAL_FORMALIZE_STATUS = '正在清理转义符号'
 
 export function Md2WordApp() {
   const [templates, setTemplates] = useState<TemplateItem[]>([])
@@ -19,6 +19,7 @@ export function Md2WordApp() {
   const [outputName, setOutputName] = useState('result.docx')
   const [outputNameEdited, setOutputNameEdited] = useState(false)
   const [subtitle, setSubtitle] = useState('')
+  const [processingMode, setProcessingMode] = useState<ProcessingMode>('baseline')
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState('')
   const [cleanedMarkdown, setCleanedMarkdown] = useState('')
@@ -75,6 +76,7 @@ export function Md2WordApp() {
     setOutputName('result.docx')
     setOutputNameEdited(false)
     setSubtitle('')
+    setProcessingMode('baseline')
     setFile(null)
     setPreview('')
     setCleanedMarkdown('')
@@ -198,6 +200,7 @@ export function Md2WordApp() {
     formData.append('title', title)
     formData.append('header_title', headerTitle)
     formData.append('output_name', outputName || buildOutputName(title))
+    formData.append('mode', processingMode)
     if (selectedTemplate?.supports_subtitle && subtitle.trim()) {
       formData.append('subtitle', subtitle.trim())
     }
@@ -291,9 +294,11 @@ export function Md2WordApp() {
           outputName={outputName}
           selectedTemplate={selectedTemplate}
           subtitle={subtitle}
+          processingMode={processingMode}
           onTitleChange={handleTitleChange}
           onOutputNameChange={handleOutputNameChange}
           onSubtitleChange={setSubtitle}
+          onProcessingModeChange={setProcessingMode}
           onGenerate={() => void onGenerate()}
         />
       )

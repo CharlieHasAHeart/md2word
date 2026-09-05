@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from backend.md2word.formalizer import FormalizeProgress, FormalizeResult, iter_formalize_markdown
+from backend.md2word.formalizer import FormalizeProgress, FormalizeResult, ProcessingMode, iter_formalize_markdown
 from backend.md2word.workflow import convert_markdown_to_docx
 from backend.md2word.template_registry import TEMPLATE_CHOICES, get_template_metadata, get_template_path
 
@@ -43,11 +43,13 @@ def list_templates() -> list[dict[str, str | bool]]:
 async def formalize_markdown_endpoint(
     markdown_file: UploadFile | None = File(None),
     file: UploadFile | None = File(None),
+    mode: str = Form("baseline"),
 ) -> StreamingResponse:
     upload = _pick_upload(markdown_file=markdown_file, legacy_file=file)
     source_name, markdown_text = await _read_markdown_upload(upload)
+    processing_mode = _coerce_processing_mode(mode)
     return StreamingResponse(
-        _iter_formalize_stream(markdown_text=markdown_text, source_name=source_name),
+        _iter_formalize_stream(markdown_text=markdown_text, source_name=source_name, mode=processing_mode),
         media_type="application/x-ndjson",
     )
 
@@ -63,6 +65,7 @@ async def convert_markdown_endpoint(
     header_title: str = Form(""),
     output_name: str = Form(""),
     subtitle: str = Form(""),
+    mode: str = Form("baseline"),
 ) -> Response:
     upload = _pick_upload(markdown_file=markdown_file, legacy_file=file)
     effective_template_id = _coerce_text(template_id) or _coerce_text(template_name) or "reference"
@@ -84,6 +87,7 @@ async def convert_markdown_endpoint(
 
     metadata = get_template_metadata(effective_template_id)
     source_name, markdown_text = await _read_markdown_upload(upload)
+    processing_mode = _coerce_processing_mode(mode)
     effective_title = _coerce_text(title) or _coerce_text(document_title)
     supports_subtitle = metadata.supports_subtitle if metadata is not None else "short" in effective_template_id
     effective_subtitle = _coerce_text(subtitle) if supports_subtitle else ""
@@ -100,6 +104,7 @@ async def convert_markdown_endpoint(
             document_title=effective_title,
             subtitle=effective_subtitle,
             template_path=template_path,
+            mode=processing_mode,
         )
         content = result.output_path.read_bytes()
 
@@ -162,8 +167,8 @@ def _content_disposition(filename: str) -> str:
     return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
 
 
-def _iter_formalize_stream(markdown_text: str, source_name: str):
-    for event in iter_formalize_markdown(markdown_text, source_path=Path(source_name)):
+async def _iter_formalize_stream(markdown_text: str, source_name: str, mode: ProcessingMode):
+    for event in iter_formalize_markdown(markdown_text, source_path=Path(source_name), mode=mode):
         if isinstance(event, FormalizeProgress):
             yield _json_line(
                 {
@@ -195,3 +200,17 @@ def _build_formalize_payload(formalized: FormalizeResult, source_name: str) -> d
 
 def _json_line(payload: dict[str, object]) -> bytes:
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _coerce_processing_mode(value: object) -> ProcessingMode:
+    mode = value.strip() if isinstance(value, str) else "baseline"
+    if mode in {"baseline", "ai_enhanced"}:
+        return mode
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": "invalid_processing_mode",
+            "message": f"Unsupported processing mode: {value}",
+            "available": ["baseline", "ai_enhanced"],
+        },
+    )

@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 from urllib import error, request
 
 
@@ -144,17 +144,21 @@ class FormalizerLLMClient:
         return content or None
 
 
+ProcessingMode = Literal["baseline", "ai_enhanced"]
+
+
 FORMALIZE_STAGE_MESSAGES = {
-    "clean_body_noise": "正在清理正文噪音",
-    "drop_duplicate_document_title_noise": "正在清理重复标题",
+    "normalize_escaped_characters": "正在清理转义符号",
+    "normalize_supported_markdown_syntax": "正在规范 Markdown 语法",
+    "normalize_heading_lines": "正在规范标题写法",
+    "normalize_blank_lines": "正在清理空行",
+    "normalize_inline_spacing": "正在清理中英文符号空格",
     "extract_heading_tree": "正在提取标题结构",
     "correct_heading_tree": "正在修正标题层级",
     "validate_heading_tree_json": "正在校验标题结构",
     "rebuild_markdown_from_heading_tree": "正在重建正文结构",
     "inspect_image_refs": "正在检查图片引用",
-    "normalize_supported_markdown_syntax": "正在规范 Markdown 语法",
     "remove_ai_response_traces": "正在移除 AI 痕迹",
-    "finalize_markdown_cleanup": "正在执行最终清理",
 }
 
 
@@ -188,9 +192,10 @@ def formalize_markdown(
     md_text: str,
     source_path: str | Path | None = None,
     llm_client: FormalizerLLMClient | None = None,
+    mode: ProcessingMode = "ai_enhanced",
 ) -> FormalizeResult:
     result: FormalizeResult | None = None
-    for event in iter_formalize_markdown(md_text, source_path=source_path, llm_client=llm_client):
+    for event in iter_formalize_markdown(md_text, source_path=source_path, llm_client=llm_client, mode=mode):
         if isinstance(event, FormalizeResult):
             result = event
     if result is None:
@@ -198,25 +203,65 @@ def formalize_markdown(
     return result
 
 
+def build_baseline_markdown(
+    md_text: str,
+    source_path: str | Path | None = None,
+    llm_client: FormalizerLLMClient | None = None,
+) -> FormalizeResult:
+    return formalize_markdown(md_text, source_path=source_path, llm_client=llm_client, mode="baseline")
+
+
 def iter_formalize_markdown(
     md_text: str,
     source_path: str | Path | None = None,
     llm_client: FormalizerLLMClient | None = None,
+    mode: ProcessingMode = "ai_enhanced",
 ) -> Iterator[FormalizeProgress | FormalizeResult]:
+    if mode not in {"baseline", "ai_enhanced"}:
+        raise ValueError(f"Unsupported processing mode: {mode}")
     llm_client = llm_client if llm_client is not None else FormalizerLLMClient.from_env()
     steps: list[FormalizeStep] = []
     issues: list[FormalizeIssue] = []
 
-    yield _formalize_progress("clean_body_noise")
+    yield _formalize_progress("normalize_escaped_characters")
     before = md_text
-    current = clean_body_noise(md_text, llm_client=llm_client)
-    steps.append(FormalizeStep(name="clean_body_noise", changed=current != before))
+    current = normalize_escaped_characters(md_text, llm_client=llm_client)
+    steps.append(FormalizeStep(name="normalize_escaped_characters", changed=current != before))
 
-    yield _formalize_progress("drop_duplicate_document_title_noise")
-    prepared_source = drop_duplicate_document_title_noise(current)
+    yield _formalize_progress("normalize_supported_markdown_syntax")
+    before = current
+    current, syntax_issues = normalize_supported_markdown_syntax(current, llm_client=llm_client)
+    issues.extend(syntax_issues)
+    steps.append(FormalizeStep(name="normalize_supported_markdown_syntax", changed=current != before, issues=syntax_issues))
+
+    yield _formalize_progress("normalize_heading_lines")
+    before = current
+    current = normalize_heading_lines(current)
+    steps.append(FormalizeStep(name="normalize_heading_lines", changed=current != before))
+
+    yield _formalize_progress("normalize_blank_lines")
+    before = current
+    current = normalize_blank_lines(current)
+    steps.append(FormalizeStep(name="normalize_blank_lines", changed=current != before))
+
+    yield _formalize_progress("normalize_inline_spacing")
+    before = current
+    current = normalize_inline_spacing(current)
+    steps.append(FormalizeStep(name="normalize_inline_spacing", changed=current != before))
+
+    if mode == "baseline":
+        yield FormalizeResult(
+            markdown_text=current,
+            document_title=extract_document_title(current),
+            heading_tree=[],
+            images=[],
+            steps=steps,
+            issues=issues,
+        )
+        return
 
     yield _formalize_progress("extract_heading_tree")
-    extracted_tree = extract_heading_tree(prepared_source)
+    extracted_tree = extract_heading_tree(current)
     steps.append(FormalizeStep(name="extract_heading_tree", changed=False))
 
     yield _formalize_progress("correct_heading_tree")
@@ -235,7 +280,7 @@ def iter_formalize_markdown(
 
     yield _formalize_progress("rebuild_markdown_from_heading_tree")
     before = md_text
-    current = rebuild_markdown_from_heading_tree(prepared_source, corrected_tree)
+    current = rebuild_markdown_from_heading_tree(current, corrected_tree)
     steps.append(FormalizeStep(name="rebuild_markdown_from_heading_tree", changed=current != before))
 
     yield _formalize_progress("inspect_image_refs")
@@ -243,21 +288,10 @@ def iter_formalize_markdown(
     issues.extend(image_issues)
     steps.append(FormalizeStep(name="inspect_image_refs", changed=False, issues=image_issues))
 
-    yield _formalize_progress("normalize_supported_markdown_syntax")
-    before = current
-    current, syntax_issues = normalize_supported_markdown_syntax(current, llm_client=llm_client)
-    issues.extend(syntax_issues)
-    steps.append(FormalizeStep(name="normalize_supported_markdown_syntax", changed=current != before, issues=syntax_issues))
-
     yield _formalize_progress("remove_ai_response_traces")
     before = current
     current = remove_ai_response_traces(current, llm_client=llm_client)
     steps.append(FormalizeStep(name="remove_ai_response_traces", changed=current != before))
-
-    yield _formalize_progress("finalize_markdown_cleanup")
-    before = current
-    current = finalize_markdown_cleanup(current, llm_client=llm_client)
-    steps.append(FormalizeStep(name="finalize_markdown_cleanup", changed=current != before))
 
     yield FormalizeResult(
         markdown_text=current,
@@ -365,26 +399,59 @@ def rebuild_markdown_from_heading_tree(md_text: str, tree: list[HeadingNode]) ->
     return _normalize_blank_lines("\n".join(rebuilt)).rstrip() + "\n"
 
 
-def clean_body_noise(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
-    return _stabilize_lexical_cleanup(md_text)
+def normalize_escaped_characters(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
+    return _stabilize_escape_normalization(md_text)
 
 
-def finalize_markdown_cleanup(md_text: str, llm_client: FormalizerLLMClient | None = None) -> str:
-    cleaned = _stabilize_lexical_cleanup(md_text)
-    return _normalize_document_heading_lines(cleaned)
+def normalize_heading_lines(md_text: str) -> str:
+    return _normalize_document_heading_lines(md_text)
 
 
-def _stabilize_lexical_cleanup(md_text: str) -> str:
+def normalize_blank_lines(md_text: str) -> str:
+    return _with_trailing_newline(_normalize_blank_lines(md_text))
+
+
+def normalize_inline_spacing(md_text: str) -> str:
+    normalized: list[str] = []
+    in_fence = False
+    fence_char = ""
+
+    for line in md_text.splitlines(keepends=True):
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+            elif marker[0] == fence_char:
+                in_fence = False
+                fence_char = ""
+            normalized.append(line)
+            continue
+        if in_fence:
+            normalized.append(line)
+            continue
+
+        line_ending = "\n" if line.endswith("\n") else ""
+        content = line[:-1] if line_ending else line
+        prefix, body = _split_markdown_line_prefix(content)
+        normalized_body = _replace_outside_inline_code(body, _remove_cjk_ascii_spacing)
+        normalized.append(prefix + normalized_body + line_ending)
+
+    return _with_trailing_newline("".join(normalized))
+
+
+def _stabilize_escape_normalization(md_text: str) -> str:
     current = md_text
     for _ in range(LEXICAL_CLEANUP_MAX_ROUNDS):
-        updated = _clean_body_noise_pass(current)
+        updated = _normalize_escaped_characters_pass(current)
         if updated == current:
             return updated
         current = updated
     return current
 
 
-def _clean_body_noise_pass(md_text: str) -> str:
+def _normalize_escaped_characters_pass(md_text: str) -> str:
     escape_re = re.compile(r"\\([+\-*/.()[\]{}])")
     cleaned: list[str] = []
     in_fence = False
@@ -408,11 +475,11 @@ def _clean_body_noise_pass(md_text: str) -> str:
         cleaned.append(
             _replace_outside_inline_code(
                 line,
-                lambda text: _strip_strong_emphasis_markers(escape_re.sub(r"\1", text)),
+                lambda text: escape_re.sub(r"\1", text),
             )
         )
 
-    return _with_trailing_newline(_normalize_blank_lines("".join(cleaned)))
+    return _with_trailing_newline("".join(cleaned))
 
 
 def inspect_image_refs(
@@ -509,6 +576,10 @@ def normalize_supported_markdown_syntax(
             if _contains_footnote_marker(pending_text) or _contains_footnote_marker(line):
                 pending_text = _strip_footnote_markers(pending_text)
                 issues.append(_syntax_issue("unsupported_markdown_removed", pending_line_no))
+            normalized_pending_text = _replace_outside_inline_code(pending_text, _strip_strong_emphasis_markers)
+            if normalized_pending_text != pending_text:
+                issues.append(_syntax_issue("unsupported_markdown_normalized", pending_line_no))
+            pending_text = normalized_pending_text
             output.append(pending_text)
             pending_plain_line = None
 
@@ -703,9 +774,27 @@ def _replace_outside_inline_code(line: str, replacer) -> str:
     return "`".join(parts)
 
 
-def _strip_strong_emphasis_markers(text: str) -> str:
-    text = re.sub(r"\*\*(.+?)\*\*", lambda match: match.group(1).strip(), text)
-    text = re.sub(r"__(.+?)__", lambda match: match.group(1).strip(), text)
+def _split_markdown_line_prefix(line: str) -> tuple[str, str]:
+    patterns = (
+        r"^(\s*#{1,6}\s+)(.*)$",
+        r"^(\s*[-+*]\s+)(.*)$",
+        r"^(\s*\d+[.)]\s+)(.*)$",
+        r"^(\s*>\s?)(.*)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, line)
+        if match is not None:
+            return match.group(1), match.group(2)
+    return "", line
+
+
+def _remove_cjk_ascii_spacing(text: str) -> str:
+    cjk = r"\u4e00-\u9fff"
+    ascii_printable = r"\x21-\x7e"
+    text = re.sub(rf"(?<=[{cjk}])\s+(?=[{ascii_printable}])", "", text)
+    text = re.sub(rf"(?<=[{ascii_printable}])\s+(?=[{cjk}])", "", text)
+    text = re.sub(r"(?<=[([{<])\s+", "", text)
+    text = re.sub(r"\s+(?=[)\]}>])", "", text)
     return text
 
 
@@ -771,7 +860,14 @@ def _normalize_one_supported_syntax_line(line: str) -> str | None:
     line = re.sub(r"^(\s*)>{2,}\s*", r"\1> ", line)
     if re.search(r"</?[\w:-]+(?:\s[^>]*)?>", line):
         line = re.sub(r"</?[\w:-]+(?:\s[^>]*)?>", "", line)
+    line = _replace_outside_inline_code(line, _strip_strong_emphasis_markers)
     return line if line.strip() else ""
+
+
+def _strip_strong_emphasis_markers(text: str) -> str:
+    text = re.sub(r"\*\*(.+?)\*\*", lambda match: match.group(1).strip(), text)
+    text = re.sub(r"__(.+?)__", lambda match: match.group(1).strip(), text)
+    return text
 
 
 def _syntax_issue(code: str, line: int) -> FormalizeIssue:
@@ -789,7 +885,21 @@ def _flush_pending_plain_line(output: list[str], pending: tuple[int, str] | None
 
 
 def _normalize_blank_lines(text: str) -> str:
-    return re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n").replace("\r", "\n"))
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    output: list[str] = []
+    blank_line_seen = False
+
+    for line in normalized.split("\n"):
+        if line.strip() == "":
+            if blank_line_seen:
+                continue
+            output.append("")
+            blank_line_seen = True
+            continue
+        output.append(line)
+        blank_line_seen = False
+
+    return "\n".join(output)
 
 
 def _with_trailing_newline(text: str) -> str:
@@ -938,36 +1048,6 @@ def _contains_footnote_marker(text: str) -> bool:
 
 def _strip_footnote_markers(text: str) -> str:
     return re.sub(r"\[\^[^\]]+\]", "", text)
-
-
-def drop_duplicate_document_title_noise(md_text: str) -> str:
-    title = extract_document_title(md_text)
-    if not title:
-        return md_text
-
-    lines = md_text.splitlines()
-    title_seen = False
-    output: list[str] = []
-    skip_body = False
-
-    for line in lines:
-        if re.match(rf"^#\s+{re.escape(title)}\s*$", _normalize_heading_line(line)):
-            if title_seen:
-                skip_body = True
-                continue
-            title_seen = True
-            output.append(line)
-            continue
-
-        if skip_body:
-            if HEADING_RE.match(line):
-                skip_body = False
-                output.append(line)
-            continue
-
-        output.append(line)
-
-    return _normalize_blank_lines("\n".join(output)).rstrip() + "\n"
 
 
 def strip_heading_numbering(title: str) -> str:

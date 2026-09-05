@@ -3,7 +3,7 @@ import { ArrowRight } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
 import { Label } from '../../../../components/ui/label'
-import type { TemplateItem } from '../../types'
+import type { ProcessingMode, TemplateItem } from '../../types'
 
 export function GenerateStep({
   busy,
@@ -11,9 +11,11 @@ export function GenerateStep({
   outputName,
   selectedTemplate,
   subtitle,
+  processingMode,
   onTitleChange,
   onOutputNameChange,
   onSubtitleChange,
+  onProcessingModeChange,
   onGenerate,
 }: {
   busy: boolean
@@ -21,9 +23,11 @@ export function GenerateStep({
   outputName: string
   selectedTemplate: TemplateItem | undefined
   subtitle: string
+  processingMode: ProcessingMode
   onTitleChange: (value: string) => void
   onOutputNameChange: (value: string) => void
   onSubtitleChange: (value: string) => void
+  onProcessingModeChange: (value: ProcessingMode) => void
   onGenerate: () => void
 }) {
   const outputNameValue = outputName.toLowerCase().endsWith('.docx')
@@ -67,6 +71,30 @@ export function GenerateStep({
               />
             </div>
           ) : null}
+          <div className="space-y-2">
+            <Label>转换模式</Label>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                variant={processingMode === 'baseline' ? 'default' : 'outline'}
+                onClick={() => onProcessingModeChange('baseline')}
+              >
+                直接转换
+              </Button>
+              <Button
+                type="button"
+                variant={processingMode === 'ai_enhanced' ? 'default' : 'outline'}
+                onClick={() => onProcessingModeChange('ai_enhanced')}
+              >
+                AI 增强后转换
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {processingMode === 'baseline'
+                ? '使用前 5 步基线清理结果直接生成 Word。'
+                : '在基线清理后继续执行标题结构与 AI 痕迹清理，再生成 Word。'}
+            </p>
+          </div>
         </div>
       </div>
       <div className="flex justify-end bg-muted/20 px-6 py-5 lg:px-8">

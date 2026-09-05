@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/md2word-document.schema.json",
+  "title": "md2word Document Schema",
+  "description": "Schema for Markdown documents supported by the current md2word pipeline after baseline cleanup.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_title",
+    "source",
+    "blocks"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "document_title": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "baseline",
+            "ai_enhanced"
+          ]
+        }
+      }
+    },
+    "blockBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "source_line_start",
+        "source_line_end"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_line_start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_line_end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "block": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/headingBlock"
+        },
+        {
+          "$ref": "#/$defs/paragraphBlock"
+        },
+        {
+          "$ref": "#/$defs/unorderedListBlock"
+        },
+        {
+          "$ref": "#/$defs/orderedListBlock"
+        },
+        {
+          "$ref": "#/$defs/blockquoteBlock"
+        },
+        {
+          "$ref": "#/$defs/codeBlock"
+        },
+        {
+          "$ref": "#/$defs/tableBlock"
+        },
+        {
+          "$ref": "#/$defs/imageBlock"
+        }
+      ]
+    },
+    "headingBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "level",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "heading"
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "paragraphBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "paragraph"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "unorderedListBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "const": "unordered_list"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/listItem"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "orderedListBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "const": "ordered_list"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/listItem"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "listItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "level"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "blockquoteBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "blockquote"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "codeBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "fence",
+            "language",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "code_block"
+            },
+            "fence": {
+              "type": "string",
+              "pattern": "^(?:`{3,}|~{3,})$"
+            },
+            "language": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "tableBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "header",
+            "rows"
+          ],
+          "properties": {
+            "type": {
+              "const": "table"
+            },
+            "header": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/tableRow"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tableRow": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "imageBlock": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/blockBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "caption",
+            "target"
+          ],
+          "properties": {
+            "type": {
+              "const": "image"
+            },
+            "caption": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resolved_path": {
+              "type": "string"
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "supported": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

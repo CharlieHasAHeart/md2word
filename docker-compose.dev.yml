@@ -1,19 +1,4 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: dev
-    container_name: multi-space-backend-dev
-    working_dir: /app
-    env_file:
-      - .env
-    volumes:
-      - ./:/app
-    ports:
-      - "8000:8000"
-    restart: unless-stopped
-
   frontend:
     build:
       context: .
@@ -21,8 +6,6 @@ services:
       target: dev
     container_name: multi-space-frontend-dev
     working_dir: /app/frontend
-    depends_on:
-      - backend
     environment:
       CHOKIDAR_USEPOLLING: "true"
     volumes:

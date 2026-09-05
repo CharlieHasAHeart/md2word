@@ -8,7 +8,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from .converter import render_markdown_to_document
-from .formalizer import formalize_markdown
+from .formalizer import ProcessingMode, formalize_markdown
 from .template_registry import DEFAULT_STYLE_MAP, get_style_map_for_template_path
 from .template_ops import (
     find_body_placeholder,
@@ -31,11 +31,12 @@ def convert_markdown_to_docx(
     document_title: str = "",
     subtitle: str = "",
     template_path: str | Path | None = None,
+    mode: ProcessingMode = "baseline",
 ) -> ConversionResult:
     source = Path(md_path)
     target = Path(output_path)
     md_text = source.read_text(encoding="utf-8")
-    formalized = formalize_markdown(md_text, source_path=source)
+    formalized = formalize_markdown(md_text, source_path=source, mode=mode)
     title = document_title.strip() or formalized.document_title or source.stem
     body_markdown = _strip_document_title_heading(formalized.markdown_text)
 
